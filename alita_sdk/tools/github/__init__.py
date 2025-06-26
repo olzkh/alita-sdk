@@ -23,6 +23,7 @@ def _get_toolkit(tool) -> BaseToolkit:
         github_app_id=tool['settings'].get('app_id', None),
         github_app_private_key=tool['settings'].get('app_private_key', None),
         llm=tool['settings'].get('llm', None),
+        alita=tool['settings'].get('alita', None),
         connection_string=tool['settings'].get('connection_string', None),
         collection_name=str(tool['id']),
         doctype='code',
@@ -71,7 +72,9 @@ class AlitaGitHubToolkit(BaseToolkit):
                                     }
                                 ]
                             },
-                        }
+                        },
+                        "categories": ["code repositories"],
+                        "extra_categories": ["github", "git", "repository", "code", "version control"],
                     },
                 }
             ),
@@ -120,3 +123,4 @@ class AlitaGitHubToolkit(BaseToolkit):
 
     def get_tools(self):
         return self.tools
+
