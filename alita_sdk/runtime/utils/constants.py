@@ -4,9 +4,10 @@ STYLES = r"""
         @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap');
         
         /* Global dark theme styling */
-        .stApp {
-            background: linear-gradient(180deg, #0F1E33 0%, #1B172C 100%);
+         .stApp {
+            background: #FFFFFF; /* Set background color to white */
             font-family: 'Montserrat', sans-serif !important;
+            color: #000000; /* Ensure text is black for readability */
         }
         
         /* Hide default Streamlit elements */

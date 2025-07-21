@@ -6,7 +6,7 @@ from langchain_core.tools import BaseTool, ToolException
 from pydantic.fields import Field
 from pydantic import create_model, BaseModel
 from .api_wrapper import CarrierAPIWrapper
-from .carrier_sdk import CarrierAPIError
+from .sdk import CarrierAPIError
 
 logger = logging.getLogger(__name__)
 

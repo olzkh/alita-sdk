@@ -114,7 +114,6 @@ class CreateUIExcelReportTool(BaseTool):
                     
                     # Download JSON content directly from the converted URL
                     # Extract bucket and file name from the URL structure
-                    # URL format: https://platform.getcarrier.io/api/v1/artifacts/artifact/default/{project_id}/reports/{file_name}
                     url_parts = json_url.split('/')
                     if len(url_parts) >= 2:
                         bucket = url_parts[-2]  # "reports"

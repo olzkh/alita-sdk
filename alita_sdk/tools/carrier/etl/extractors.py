@@ -1,4 +1,5 @@
 import io
+import os
 import json
 import logging
 from typing import Dict, Any, Optional
@@ -23,39 +24,51 @@ class GatlingLogExtractor(BaseExtractor):
 
     def extract(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        📥 Extracts Gatling log file content with comprehensive validation and error handling.
-
-        Args:
-            context: Dictionary containing extraction parameters
-
-        Returns:
-            Dictionary with log content stream and metadata
-
-        Raises:
-            ToolException: With detailed user guidance for resolution
+        FIXED: Extracts Gatling log content from LOCAL files created by get_report_file_name.
+        No longer tries to download files that only exist locally.
         """
-        logger.info("🚀 Starting Gatling log extraction process...")
+        logger.info("🚀 Starting robust Gatling log extraction process...")
 
         try:
-            # 🛡️ Step 1: Validate and extract context parameters
+            # Step 1: Validate context
             validated_context = self._validate_extraction_context(context)
             api_wrapper = validated_context["api_wrapper"]
             report_id = validated_context["report_id"]
 
-            # 📋 Step 2: Get and validate report metadata
+            # Step 2: Get report metadata and LOCAL file paths
             report_info = self._get_and_validate_report(api_wrapper, report_id)
+            bucket_name = report_info.get("name", "").replace("_", "").replace(" ", "").lower()
+            if not bucket_name:
+                raise ToolException(f"Could not determine bucket name from report metadata for report ID {report_id}.")
 
-            # 🔍 Step 3: Determine file paths using legacy approach
-            file_paths = self._determine_file_paths(api_wrapper, report_id, report_info)
+            # ✅ FIX: get_report_file_name returns LOCAL file paths, not remote filenames
+            logger.info("📁 Getting local file paths from get_report_file_name...")
+            _, test_log_filepath, errors_log_filepath = api_wrapper.get_report_file_name(report_id)
 
-            # 📥 Step 4: Extract log content using local file path (legacy method)
-            log_content = self._extract_log_content(file_paths["test_log_path"])
+            if not test_log_filepath:
+                raise ToolException(f"API did not return a test log filepath for report ID {report_id}.")
 
-            # ✅ Step 5: Prepare extraction result
+            logger.info(f"📄 Local test log file path: {test_log_filepath}")
+            logger.info(f"📄 Local error log file path: {errors_log_filepath}")
+
+            # ✅ FIX: Read directly from local file (no download needed)
+            if not os.path.exists(test_log_filepath):
+                raise ToolException(f"Local test log file not found: {test_log_filepath}")
+
+            logger.info(f"📖 Reading local log file: {test_log_filepath}")
+            with open(test_log_filepath, 'r', encoding='utf-8') as log_file:
+                log_content = log_file.read()
+
+            logger.info(f"✅ Successfully read {len(log_content)} characters from local log file.")
+
+            # Step 3: Prepare the result with the actual content
             extraction_result = self._prepare_extraction_result(
                 log_content,
                 report_info,
-                file_paths
+                {
+                    "test_log_path": test_log_filepath,
+                    "error_log_path": errors_log_filepath
+                }
             )
 
             logger.info("✅ Gatling log extraction completed successfully")
@@ -65,15 +78,7 @@ class GatlingLogExtractor(BaseExtractor):
             raise
         except Exception as e:
             logger.error(f"💥 Unexpected extraction failure: {e}", exc_info=True)
-            raise ToolException(
-                f"🚨 Gatling log extraction failed unexpectedly\n"
-                f"💥 Error: {str(e)}\n"
-                f"🔧 Next Steps:\n"
-                f"   1. 🔍 Use get_report_by_id tool to verify report status\n"
-                f"   2. 📋 Check if report ID '{context.get('report_id', 'unknown')}' exists\n"
-                f"   3. 🌐 Verify Carrier platform connectivity\n"
-                f"   4. 📞 Contact support if issue persists"
-            )
+            raise ToolException(f"🚨 Gatling log extraction failed unexpectedly: {str(e)}")
 
     def _validate_extraction_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -224,125 +229,6 @@ class GatlingLogExtractor(BaseExtractor):
 
         logger.debug(f"✅ Report structure validation passed for {required_fields}")
 
-    def _determine_file_paths(self, api_wrapper, report_id: str, report_info: Dict[str, Any]) -> Dict[str, str]:
-        """
-        🔍 Determines file paths using legacy Carrier API approach (no download_report_as_bytes).
-        """
-        logger.info("🔍 Determining file paths using legacy API approach...")
-
-        try:
-            # Use legacy API method to get file paths
-            report, test_log_file_path, errors_log_file_path = api_wrapper.get_report_file_name(report_id)
-
-            logger.info(f"📁 File paths determined:")
-            logger.info(f"   📊 Test log: {test_log_file_path}")
-            logger.info(f"   🚨 Error log: {errors_log_file_path}")
-
-            # Validate paths exist
-            if not test_log_file_path:
-                logger.error("❌ Test log file path is empty")
-                raise ToolException(
-                    "📁 Test log file not available\n"
-                    "🔍 Possible reasons:\n"
-                    "   • 🔄 Test is still running\n"
-                    "   • ❌ Test failed before generating logs\n"
-                    "   • 📋 Log files were not uploaded\n"
-                    "🔧 Solution: Use get_report_by_id to check test status"
-                )
-
-            return {
-                "test_log_path": test_log_file_path,
-                "error_log_path": errors_log_file_path,
-                "report_metadata": report
-            }
-
-        except Exception as e:
-            logger.error(f"💥 Failed to determine file paths: {e}", exc_info=True)
-            raise ToolException(
-                f"🚨 Unable to locate log files for report '{report_id}'\n"
-                f"💥 Error: {str(e)}\n"
-                "🔍 Possible causes:\n"
-                "   • 📋 Report is still being processed\n"
-                "   • 🔄 Test execution is incomplete\n"
-                "   • 📁 Log files are not yet available\n"
-                "🔧 Next Steps:\n"
-                "   1. ⏳ Wait for test completion if still running\n"
-                "   2. 🔍 Use get_report_by_id to check status\n"
-                "   3. 🔄 Try again after test finishes"
-            )
-
-    def _extract_log_content(self, test_log_path: str) -> str:
-        """
-        📥 Extracts log content from local file path (legacy approach - no bytes download).
-        """
-        logger.info(f"📥 Extracting log content from: {test_log_path}")
-
-        try:
-            # Read log file content directly (legacy approach)
-            # Note: In legacy code, parsers read directly from file paths
-            # We simulate this by reading the file if it's accessible
-
-            with open(test_log_path, 'r', encoding='utf-8') as log_file:
-                log_content = log_file.read()
-
-            logger.info(f"✅ Successfully extracted {len(log_content)} characters from log file")
-            logger.debug(f"📊 Log preview (first 200 chars): {log_content[:200]}...")
-
-            # Validate log content is not empty
-            if not log_content.strip():
-                logger.warning("⚠️ Log file appears to be empty")
-                raise ToolException(
-                    "📄 Log file is empty\n"
-                    "🔍 Possible reasons:\n"
-                    "   • 🔄 Test is still generating logs\n"
-                    "   • ❌ Test failed immediately\n"
-                    "   • 📋 No requests were executed\n"
-                    "🔧 Solution: Check test configuration and execution status"
-                )
-
-            return log_content
-
-        except FileNotFoundError:
-            logger.error(f"❌ Log file not found: {test_log_path}")
-            raise ToolException(
-                f"📁 Log file not accessible\n"
-                f"📍 Path: {test_log_path}\n"
-                "🔍 This indicates:\n"
-                "   • 📋 Test is still running\n"
-                "   • 🔄 Log files not yet uploaded\n"
-                "   • 🚨 File system access issue\n"
-                "🔧 Solution: Use legacy download method or wait for completion"
-            )
-        except PermissionError:
-            logger.error(f"❌ Permission denied accessing: {test_log_path}")
-            raise ToolException(
-                f"🔒 Access denied to log file\n"
-                f"📍 Path: {test_log_path}\n"
-                "🔧 This is a system permission issue\n"
-                "📞 Contact administrator for file access resolution"
-            )
-        except UnicodeDecodeError as e:
-            logger.error(f"❌ Encoding error reading log file: {e}")
-            raise ToolException(
-                "📄 Log file encoding issue\n"
-                "💥 Unable to read file content as UTF-8\n"
-                "🔧 Possible solutions:\n"
-                "   • 📋 File may be corrupted\n"
-                "   • 🔄 Try regenerating the report\n"
-                "   • 📞 Contact support for file analysis"
-            )
-        except Exception as e:
-            logger.error(f"💥 Unexpected error reading log file: {e}", exc_info=True)
-            raise ToolException(
-                f"🚨 Unexpected error accessing log file\n"
-                f"💥 Error: {str(e)}\n"
-                f"📍 Path: {test_log_path}\n"
-                "🔧 Next Steps:\n"
-                "   1. 🔄 Try again in a few moments\n"
-                "   2. 🔍 Check file system status\n"
-                "   3. 📞 Contact support if issue persists"
-            )
-
     def _prepare_extraction_result(self, log_content: str, report_info: Dict[str, Any],
                                    file_paths: Dict[str, str]) -> Dict[str, Any]:
         """
@@ -350,13 +236,25 @@ class GatlingLogExtractor(BaseExtractor):
         """
         logger.info("✨ Preparing extraction result with metadata...")
 
-        # Create string IO stream for compatibility with legacy parsers
+        # Validate log content is not empty
+        if not log_content.strip():
+            logger.warning("⚠️ Log file appears to be empty")
+            raise ToolException(
+                "📄 Log file is empty\n"
+                "🔍 Possible reasons:\n"
+                "   • 🔄 Test is still generating logs\n"
+                "   • ❌ Test failed immediately\n"
+                "   • 📋 No requests were executed\n"
+                "🔧 Solution: Check test configuration and execution status"
+            )
         log_stream = io.StringIO(log_content)
+        error_log_path = file_paths.get("error_log_path", "")
+        has_error_log = bool(error_log_path) and os.path.exists(error_log_path)
 
         # Prepare comprehensive result
         extraction_result = {
             "log_content_stream": log_stream,
-            "log_content": log_content,  # Raw content for debugging
+            "log_content": log_content,
             "report_metadata": report_info,
             "file_paths": file_paths,
             "extraction_metadata": {
@@ -374,7 +272,7 @@ class GatlingLogExtractor(BaseExtractor):
             "has_content": len(log_content.strip()) > 0,
             "content_size_bytes": len(log_content.encode('utf-8')),
             "estimated_lines": log_content.count('\n') + 1,
-            "has_error_log": bool(file_paths.get("error_log_path")),
+            "has_error_log": has_error_log,
             "report_id": report_info.get('id'),
             "report_status": report_info.get('test_status', 'unknown')
         }
@@ -478,40 +376,3 @@ class GatlingLogExtractor(BaseExtractor):
                 "type": "integer"
             }
         }
-
-# class JMeterLogExtractor(BaseExtractor):
-#     """
-#     🎯 Production-ready JMeter log extractor with comprehensive validation.
-#     """
-#
-#     def __init__(self):
-#         super().__init__()
-#         logger.info("⚡ JMeterLogExtractor initialized")
-#
-#     def extract(self, context: Dict[str, Any]) -> Dict[str, Any]:
-#         """
-#         📥 Extracts JMeter log file content with validation and error handling.
-#         """
-#         logger.info("⚡ Starting JMeter log extraction process...")
-#
-#         try:
-#             # Reuse validation logic from Gatling extractor
-#             gatling_extractor = GatlingLogExtractor()
-#             validated_context = gatling_extractor._validate_extraction_context(context)
-#
-#             api_wrapper = validated_context["api_wrapper"]
-#             report_id = validated_context["report_id"]
-#
-#             # Get report metadata
-#             report_info = gatling_extractor._get_and_validate_report(api_wrapper, report_id)
-#
-#             # Validate this is a JMeter report
-#             lg_type = report_info.get('lg_type', '').lower()
-#             if lg_type and lg_type != 'jmeter':
-#                 logger.warning(f"⚠️ Expected JMeter report, found: {lg_type}")
-#                 raise ToolException(
-#                     f"🔧 Load generator type mismatch\n"
-#                     f"📋 Expected: JMeter\n"
-#                     f"📊 Found: {lg_type}\n"
-#                     "💡 Solution: Use the correct pipeline type:\n"
-#                     "   • ⚡ For JMeter reports: 'jmeter_to_excel
