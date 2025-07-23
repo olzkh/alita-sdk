@@ -77,7 +77,6 @@ class CarrierClient(BaseModel):
         headers = {
             'Authorization': f'Bearer {self.credentials.token}',
             'Content-Type': 'application/json',
-            'X-Organization': self.credentials.organization
         }
         self.session.headers.update(headers)
         self.endpoints = _EndpointManager(project_id=self.credentials.project_id)
@@ -349,6 +348,10 @@ class CarrierClient(BaseModel):
         """Uploads a single local file to a specified bucket."""
         endpoint = self.endpoints.build_endpoint('upload_artifact', bucket_name=bucket_name)
         file_name_on_server = os.path.basename(file_path)
+        original_headers = self.session.headers.copy()
+        if 'Content-Type' in self.session.headers:
+            del self.session.headers['Content-Type']
+
         try:
             with open(file_path, 'rb') as f:
                 files = {'file': (file_name_on_server, f)}
@@ -363,6 +366,9 @@ class CarrierClient(BaseModel):
             # Error is already logged by _request, so just log the context and return False.
             logger.error(f"Upload of '{file_name_on_server}' to bucket '{bucket_name}' failed at the API level.")
             return False
+        finally:
+            # Restore original headers
+            self.session.headers.update(original_headers)
 
     def add_tag_to_report(self, report_id: str, tag_name: str) -> requests.Response:
         """Restored legacy method to add tags to reports."""
@@ -497,25 +503,27 @@ class CarrierClient(BaseModel):
         if not os.path.exists(file_path):
             logger.error(f"File not found: {file_path}")
             raise CarrierAPIError(f"File not found: {file_path}")
-        from time import sleep
-        sleep(30)
         endpoint = self.endpoints.build_endpoint('upload_artifact', bucket_name=bucket_name)
-        print(endpoint)
-        # Add S3 config parameters
         params = {'integration_id': 1, 'is_local': False}
+
+        # Temporarily remove Content-Type header for multipart
+        original_headers = self.session.headers.copy()
+        if 'Content-Type' in self.session.headers:
+            del self.session.headers['Content-Type']
 
         try:
             with open(file_path, 'rb') as f:
                 files = {'file': (os.path.basename(file_path), f)}
-                self._request('post', endpoint, params=params, files=files)
-
+                st = self._request('post', endpoint, params=params, files=files)
+            print(st.text)
             logger.info(f"Successfully uploaded {file_path} to bucket {bucket_name}")
             return True
         except Exception as e:
             logger.error(f"Failed to upload {file_path}: {e}")
             return False
-
-    # ADD TO CarrierClient class in paste.txt
+        finally:
+            # Restore original headers
+            self.session.headers.update(original_headers)
 
     def get_ui_tests_list(self) -> List[Dict[str, Any]]:
         """Gets list of UI tests."""

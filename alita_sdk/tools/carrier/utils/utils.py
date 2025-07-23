@@ -282,9 +282,6 @@ class CarrierArtifactUploader:
             True if the upload was successful, False otherwise.
         """
         temp_zip_path = f"/tmp/{os.path.splitext(remote_filename)[0]}.zip"
-        from time import sleep
-        sleep(50)
-
         self.logger.info(
             f"Preparing to upload '{remote_filename}' by creating a temporary zip archive at '{temp_zip_path}'.")
 
@@ -303,6 +300,7 @@ class CarrierArtifactUploader:
 
         # Step 3: Upload the temporary zip file using the provided API wrapper method
         success = self.api.upload_file(bucket_name, temp_zip_path)
+
         if success:
             self.logger.info(f"Successfully uploaded '{temp_zip_path}' to bucket '{bucket_name}'.")
         else:
