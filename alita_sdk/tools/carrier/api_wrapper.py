@@ -202,3 +202,15 @@ class CarrierAPIWrapper(BaseModel):
         except Exception as e:
             logger.error(f"Failed to download UI report JSON: {e}")
             return None
+
+    def get_backend_environments(self, test_name: str) -> List[str]:
+        """Get environments for a specific backend test."""
+        return self._client.get_backend_environments(test_name)
+    
+    def get_backend_requests(self, test_name: str, environment: str) -> List[str]:
+        """Get request names for a specific backend test and environment."""
+        return self._client.get_backend_requests(test_name, environment)
+    
+    def create_backend_threshold(self, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new backend threshold."""
+        return self._client.create_backend_threshold(threshold_data)

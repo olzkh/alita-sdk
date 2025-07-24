@@ -8,6 +8,7 @@ from .update_ui_test_schedule_tool import UpdateUITestScheduleTool
 from .create_ui_excel_report_tool import CreateUIExcelReportTool
 from .create_ui_test_tool import CreateUITestTool
 from .cancel_ui_test_tool import CancelUITestTool
+from .backend_thresholds_tool import SetBackendThresholdsTool, GetBackendThresholdsTool
 
 __all__ = [
     {"name": "get_ticket_list", "tool": FetchTicketsTool},
@@ -26,5 +27,7 @@ __all__ = [
     {"name": "update_ui_test_schedule", "tool": UpdateUITestScheduleTool},
     {"name": "create_ui_excel_report", "tool": CreateUIExcelReportTool},
     {"name": "create_ui_test", "tool": CreateUITestTool},
-    {"name": "cancel_ui_test", "tool": CancelUITestTool}
+    {"name": "cancel_ui_test", "tool": CancelUITestTool},
+    {"name": "set_backend_thresholds", "tool": SetBackendThresholdsTool},
+    {"name": "get_backend_thresholds", "tool": GetBackendThresholdsTool}
 ]

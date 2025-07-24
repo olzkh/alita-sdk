@@ -98,6 +98,25 @@ class CarrierClient(BaseModel):
     def run_test(self, test_id: str, json_body):
         endpoint = f"api/v1/backend_performance/test/{self.credentials.project_id}/{test_id}"
         return self.request('post', endpoint, json=json_body).get("result_id", "")
+    
+    def get_backend_environments(self, test_name: str) -> List[str]:
+        """Get environments for a specific backend test."""
+        endpoint = f"api/v1/backend_performance/environments/{self.credentials.project_id}?name={test_name}"
+        response = self.request('get', endpoint)
+        # Expected response format based on API documentation
+        return response if isinstance(response, list) else []
+    
+    def get_backend_requests(self, test_name: str, environment: str) -> List[str]:
+        """Get request names for a specific backend test and environment."""
+        endpoint = f"api/v1/backend_performance/requests/{self.credentials.project_id}?name={test_name}&environment={environment}"
+        response = self.request('get', endpoint)
+        # Expected response format based on API documentation
+        return response if isinstance(response, list) else []
+    
+    def create_backend_threshold(self, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new backend threshold."""
+        endpoint = f"api/v1/backend_performance/thresholds/{self.credentials.project_id}"
+        return self.request('post', endpoint, json=threshold_data)
 
     def get_integrations(self, name: str):
         endpoint = f"api/v1/integrations/integrations/{self.credentials.project_id}?name={name}"
