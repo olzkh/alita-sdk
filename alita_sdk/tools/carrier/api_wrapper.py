@@ -214,3 +214,11 @@ class CarrierAPIWrapper(BaseModel):
     def create_backend_threshold(self, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new backend threshold."""
         return self._client.create_backend_threshold(threshold_data)
+
+    def get_backend_thresholds(self) -> List[Dict[str, Any]]:
+        """Get all backend thresholds for the project."""
+        return self._client.get_backend_thresholds()
+
+    def delete_backend_threshold(self, threshold_id: str):
+        """Delete a backend threshold by ID."""
+        return self._client.delete_backend_threshold(threshold_id)

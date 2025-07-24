@@ -118,6 +118,25 @@ class CarrierClient(BaseModel):
         endpoint = f"api/v1/backend_performance/thresholds/{self.credentials.project_id}"
         return self.request('post', endpoint, json=threshold_data)
 
+    def get_backend_thresholds(self):
+        """Get all backend thresholds for the project."""
+        endpoint = f"api/v1/backend_performance/thresholds/{self.credentials.project_id}"
+        return self.request('get', endpoint)
+
+    def delete_backend_threshold(self, threshold_id: str):
+        """Delete a backend threshold by ID."""
+        endpoint = f"api/v1/backend_performance/thresholds/{self.credentials.project_id}?id%5B%5D={threshold_id}"
+        full_url = f"{self.credentials.url.rstrip('/')}/{endpoint.lstrip('/')}"
+        response = self.session.request('delete', full_url)
+        
+        # For delete operations, we expect 204 No Content as success
+        if response.status_code == 204:
+            return {"success": True, "message": "Threshold deleted successfully"}
+        else:
+            # Log error and raise exception for any other status code
+            logger.error(f"Delete failed with status {response.status_code}: {response.text[:500]}")
+            raise CarrierAPIError(f"Delete request failed with status {response.status_code}")
+
     def get_integrations(self, name: str):
         endpoint = f"api/v1/integrations/integrations/{self.credentials.project_id}?name={name}"
         return self.request('get', endpoint)
