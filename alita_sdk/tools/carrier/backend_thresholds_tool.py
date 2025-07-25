@@ -29,10 +29,10 @@ class SetBackendThresholdsTool(BaseTool):
     args_schema: Type[BaseModel] = create_model(
         "SetBackendThresholdsInput",
         step=(str, Field(default="show_tests_and_envs", description="Current step: 'show_tests_and_envs', 'get_requests', or 'create_threshold'")),
-        test_name=(str, Field(default=None, description="Selected test name")),
-        environment=(str, Field(default=None, description="Selected environment")),
-        examples=(str, Field(default=None, description="Examples of Threshold Logic. How to properly configure thresholds")),
-        threshold_config=(str, Field(default=None, description="Threshold configuration object with all required fields"))
+        test_name=(Optional[str], Field(default=None, description="Selected test name")),
+        environment=(Optional[str], Field(default=None, description="Selected environment")),
+        examples=(Optional[str], Field(default=None, description="Examples of Threshold Logic. How to properly configure thresholds")),
+        threshold_config=(Optional[Dict], Field(default=None, description="Threshold configuration object with all required fields"))
     )
     
     def _get_threshold_configuration_guide(self, include_template: bool = True, test_name: Optional[str] = None, environment: Optional[str] = None) -> List[str]:
@@ -127,6 +127,46 @@ class SetBackendThresholdsTool(BaseTool):
             "- **📊 target**: ['response_time', 'throughput', 'error_rate']", 
             "- **📈 aggregation**: ['max', 'min', 'avg', 'pct95', 'pct50']"
         ]
+    
+    @staticmethod
+    def _validate_threshold_fields(threshold_config: Dict) -> tuple[bool, str]:
+        """
+        Validate threshold configuration fields.
+        
+        Returns:
+            tuple: (is_valid, error_message)
+        """
+        valid_targets = ["response_time", "throughput", "error_rate"]
+        valid_aggregations = ["max", "min", "avg", "pct95", "pct50"]
+        valid_comparisons_user = [">", ">=", "<", "<=", "=="]
+        
+        # Map user-friendly comparisons to API format
+        comparison_mapping = {
+            ">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "==": "eq"
+        }
+        
+        if "target" in threshold_config and threshold_config["target"] not in valid_targets:
+            return False, f"Invalid target '{threshold_config['target']}'. Valid values: {valid_targets}"
+        
+        if "aggregation" in threshold_config and threshold_config["aggregation"] not in valid_aggregations:
+            return False, f"Invalid aggregation '{threshold_config['aggregation']}'. Valid values: {valid_aggregations}"
+        
+        # Check if comparison is in user-friendly format and convert it
+        if "comparison" in threshold_config:
+            comparison_value = threshold_config["comparison"]
+            if comparison_value in valid_comparisons_user:
+                threshold_config["comparison"] = comparison_mapping[comparison_value]
+            elif comparison_value not in ["gt", "gte", "lt", "lte", "eq"]:
+                return False, f"Invalid comparison '{comparison_value}'. Valid values: {valid_comparisons_user}"
+        
+        # Ensure value is numeric if provided
+        if "value" in threshold_config:
+            try:
+                threshold_config["value"] = float(threshold_config["value"])
+            except (ValueError, TypeError):
+                return False, "'value' must be a numeric value"
+        
+        return True, ""
 
     def _run(self, step: str = "show_tests_and_envs", test_name: Optional[str] = None, 
              environment: Optional[str] = None, threshold_config: Optional[Dict] = None):
@@ -327,48 +367,19 @@ class SetBackendThresholdsTool(BaseTool):
             if missing_fields:
                 return f"❌ Error: Missing required fields: {missing_fields}"
             
-            # Validate field values
-            valid_targets = ["response_time", "throughput", "error_rate"]
-            valid_aggregations = ["max", "min", "avg", "pct95", "pct50"]
-            valid_comparisons_user = [">", ">=", "<", "<=", "=="]  # User-friendly format
-            valid_comparisons_api = ["gt", "gte", "lt", "lte", "eq"]  # API format
-            
-            # Map user-friendly comparisons to API format
-            comparison_mapping = {
-                ">": "gt",
-                ">=": "gte", 
-                "<": "lt",
-                "<=": "lte",
-                "==": "eq"
-            }
-            
-            if threshold_config["target"] not in valid_targets:
-                return f"❌ Error: Invalid target '{threshold_config['target']}'. Valid values: {valid_targets}"
-            
-            if threshold_config["aggregation"] not in valid_aggregations:
-                return f"❌ Error: Invalid aggregation '{threshold_config['aggregation']}'. Valid values: {valid_aggregations}"
-            
-            # Check if comparison is in user-friendly format and convert it
-            comparison_value = threshold_config["comparison"]
-            if comparison_value in valid_comparisons_user:
-                # Convert user-friendly to API format
-                threshold_config["comparison"] = comparison_mapping[comparison_value]
-            elif comparison_value not in valid_comparisons_api:
-                return f"❌ Error: Invalid comparison '{comparison_value}'. Valid values: {valid_comparisons_user}"
-            
-            # Ensure value is numeric
-            try:
-                threshold_config["value"] = float(threshold_config["value"])
-            except (ValueError, TypeError):
-                return "❌ Error: 'value' must be a numeric value"
+            # Validate field values using the helper method
+            is_valid, error_message = self._validate_threshold_fields(threshold_config)
+            if not is_valid:
+                return f"❌ Error: {error_message}"
             
             # Create the threshold
             response = self.api_wrapper.create_backend_threshold(threshold_config)
             
             # Convert comparison back to user-friendly format for display
-            display_comparison = comparison_value if comparison_value in valid_comparisons_user else {
+            api_to_user_mapping = {
                 "gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "=="
-            }.get(threshold_config["comparison"], threshold_config["comparison"])
+            }
+            display_comparison = api_to_user_mapping.get(threshold_config["comparison"], threshold_config["comparison"])
             
             result_parts = [
                 "✅ **Backend threshold created successfully!**",
@@ -469,3 +480,200 @@ class DeleteBackendThresholdsTool(BaseTool):
         except Exception as e:
             logger.error(f"Error in DeleteBackendThresholdsTool: {e}")
             return f"❌ Failed to delete threshold {threshold_id}: {str(e)}"
+
+
+class UpdateBackendThresholdsTool(BaseTool):
+    """Tool to update backend thresholds in Carrier platform."""
+    
+    api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
+    name: str = "update_backend_thresholds"
+    description: str = "Update backend performance thresholds in the Carrier platform. If no threshold_id is provided, it will show available thresholds."
+    args_schema: Type[BaseModel] = create_model(
+        "UpdateBackendThresholdsInput",
+        threshold_id=(Optional[str], Field(default=None, description="ID of the threshold to update")),
+        threshold_config=(Optional[Dict], Field(default=None, description="Updated threshold configuration object"))
+    )
+
+    def _run(self, threshold_id: Optional[str] = None, threshold_config: Optional[Dict] = None):
+        try:
+            # If no threshold_id provided, show available thresholds
+            if not threshold_id:
+                thresholds_response = self.api_wrapper.get_backend_thresholds()
+                
+                if not thresholds_response or not thresholds_response.get("rows"):
+                    return "No backend performance thresholds found in this project."
+                
+                thresholds = thresholds_response.get("rows", [])
+                
+                result_parts = [
+                    f"🔧 Found {len(thresholds)} backend threshold(s) available for update:",
+                    ""
+                ]
+                
+                for threshold in thresholds:
+                    result_parts.extend([
+                        f"**📋 Threshold ID: {threshold.get('id')}**",
+                        f"  - Test: {threshold.get('test')}",
+                        f"  - Environment: {threshold.get('environment')}",
+                        f"  - Scope: {threshold.get('scope')}",
+                        f"  - Target: {threshold.get('target')}",
+                        f"  - Aggregation: {threshold.get('aggregation')}",
+                        f"  - Comparison: {threshold.get('comparison')}",
+                        f"  - Value: {threshold.get('value')}",
+                        ""
+                    ])
+                
+                result_parts.extend([
+                    "**🚀 To update a threshold:**",
+                    "1. Specify the threshold_id (e.g., threshold_id='905')",
+                    "2. Provide the threshold_config with the fields you want to update",
+                    "",
+                    "**💡 Example:**",
+                    'threshold_id="905", threshold_config={"value": 2.5, "comparison": "gt"}',
+                    "",
+                    "📝 **Available fields to update:** test, environment, scope, target, aggregation, comparison, value"
+                ])
+                
+                return "\n".join(result_parts)
+            
+            # If threshold_id provided but no config, show current threshold and ask for updates
+            if not threshold_config:
+                return self._get_threshold_for_update(threshold_id)
+            
+            # Update the specified threshold
+            return self._update_threshold(threshold_id, threshold_config)
+            
+        except Exception as e:
+            logger.error(f"Error in UpdateBackendThresholdsTool: {e}")
+            return f"❌ Error in update operation: {str(e)}"
+
+    def _get_threshold_for_update(self, threshold_id: str) -> str:
+        """Get current threshold details and provide update guidance."""
+        try:
+            thresholds_response = self.api_wrapper.get_backend_thresholds()
+            
+            if not thresholds_response or not thresholds_response.get("rows"):
+                return f"❌ No thresholds found or threshold {threshold_id} does not exist."
+            
+            thresholds = thresholds_response.get("rows", [])
+            current_threshold = None
+            
+            for threshold in thresholds:
+                if str(threshold.get('id')) == str(threshold_id):
+                    current_threshold = threshold
+                    break
+            
+            if not current_threshold:
+                return f"❌ Threshold with ID {threshold_id} not found."
+            
+            # Convert comparison back to user-friendly format if needed
+            comparison_mapping = {
+                "gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "=="
+            }
+            display_comparison = comparison_mapping.get(current_threshold.get("comparison", ""), current_threshold.get("comparison", ""))
+            
+            result_parts = [
+                f"🔧 **Current configuration for threshold {threshold_id}:**",
+                "",
+                f"  - **Test**: {current_threshold.get('test')}",
+                f"  - **Environment**: {current_threshold.get('environment')}",
+                f"  - **Scope**: {current_threshold.get('scope')}",
+                f"  - **Target**: {current_threshold.get('target')}",
+                f"  - **Aggregation**: {current_threshold.get('aggregation')}",
+                f"  - **Comparison**: {display_comparison}",
+                f"  - **Value**: {current_threshold.get('value')}",
+                "",
+                "**📝 To update this threshold, provide a threshold_config with the fields you want to change:**",
+                "",
+                "**💡 Example configurations:**",
+                '- Change value: {"value": 1500}',
+                '- Change comparison: {"comparison": ">"}',
+                '- Change multiple: {"value": 2000, "comparison": ">=", "aggregation": "avg"}',
+                ""
+            ]
+            
+            # Add the reusable threshold configuration guide
+            result_parts.extend(SetBackendThresholdsTool._get_threshold_configuration_guide(self, include_template=False))
+            
+            result_parts.extend([
+                "",
+                "**✅ Valid Values:**",
+                "- **🎯 scope**: ['all', 'every', '<specific_request_name>']",
+                "- **📊 target**: ['response_time', 'throughput', 'error_rate']", 
+                "- **📈 aggregation**: ['max', 'min', 'avg', 'pct95', 'pct50']"
+            ])
+            
+            return "\n".join(result_parts)
+            
+        except Exception as e:
+            logger.error(f"Error getting threshold for update: {e}")
+            return f"❌ Error retrieving threshold {threshold_id}: {str(e)}"
+
+    def _update_threshold(self, threshold_id: str, threshold_config: Dict) -> str:
+        """Update the threshold with new configuration."""
+        try:
+            # Get current threshold to merge with updates
+            thresholds_response = self.api_wrapper.get_backend_thresholds()
+            
+            if not thresholds_response or not thresholds_response.get("rows"):
+                return f"❌ Threshold {threshold_id} not found."
+            
+            thresholds = thresholds_response.get("rows", [])
+            current_threshold = None
+            
+            for threshold in thresholds:
+                if str(threshold.get('id')) == str(threshold_id):
+                    current_threshold = threshold
+                    break
+            
+            if not current_threshold:
+                return f"❌ Threshold with ID {threshold_id} not found."
+            
+            # Merge current threshold with updates
+            # Only include the fields that should be in the PUT body
+            required_fields = ["test", "environment", "scope", "target", "aggregation", "comparison", "value"]
+            updated_threshold = {field: current_threshold[field] for field in required_fields if field in current_threshold}
+            
+            # Ensure the id field is present and correct type
+            updated_threshold["id"] = int(threshold_id)
+            
+            # Create a copy of threshold_config for validation (to avoid modifying the original)
+            config_to_validate = threshold_config.copy()
+            
+            # Validate field values using the helper method
+            is_valid, error_message = SetBackendThresholdsTool._validate_threshold_fields(config_to_validate)
+            if not is_valid:
+                return f"❌ {error_message}"
+            
+            # Merge the validated changes
+            updated_threshold.update(config_to_validate)
+            
+            # Update the threshold - pass the complete threshold object
+            response = self.api_wrapper.update_backend_threshold(threshold_id, updated_threshold)
+            
+            # Convert comparison back to user-friendly format for display
+            api_to_user_mapping = {
+                "gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "=="
+            }
+            display_comparison = api_to_user_mapping.get(updated_threshold.get("comparison", ""), updated_threshold.get("comparison", ""))
+            
+            result_parts = [
+                f"✅ **Successfully updated threshold {threshold_id}!**",
+                "",
+                "🎯 **Updated configuration:**",
+                f"  - **Test**: {updated_threshold.get('test')}",
+                f"  - **Environment**: {updated_threshold.get('environment')}",
+                f"  - **Scope**: {updated_threshold.get('scope')}",
+                f"  - **Target**: {updated_threshold.get('target')}",
+                f"  - **Aggregation**: {updated_threshold.get('aggregation')}",
+                f"  - **Comparison**: {display_comparison}",
+                f"  - **Value**: {updated_threshold.get('value')}",
+                "",
+                f"📋 **Summary**: {updated_threshold.get('scope')} {updated_threshold.get('target')} {display_comparison} {updated_threshold.get('value')} for test '{updated_threshold.get('test')}' in '{updated_threshold.get('environment')}' environment"
+            ]
+            
+            return "\n".join(result_parts)
+            
+        except Exception as e:
+            logger.error(f"Error updating threshold: {e}")
+            return f"❌ Error updating threshold {threshold_id}: {str(e)}"

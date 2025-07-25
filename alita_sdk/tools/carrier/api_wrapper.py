@@ -222,3 +222,7 @@ class CarrierAPIWrapper(BaseModel):
     def delete_backend_threshold(self, threshold_id: str):
         """Delete a backend threshold by ID."""
         return self._client.delete_backend_threshold(threshold_id)
+
+    def update_backend_threshold(self, threshold_id: str, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a backend threshold by ID."""
+        return self._client.update_backend_threshold(threshold_id, threshold_data)

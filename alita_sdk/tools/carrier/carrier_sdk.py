@@ -137,6 +137,11 @@ class CarrierClient(BaseModel):
             logger.error(f"Delete failed with status {response.status_code}: {response.text[:500]}")
             raise CarrierAPIError(f"Delete request failed with status {response.status_code}")
 
+    def update_backend_threshold(self, threshold_id: str, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a backend threshold by ID."""
+        endpoint = f"api/v1/backend_performance/thresholds/{self.credentials.project_id}/{threshold_id}"
+        return self.request('put', endpoint, json=threshold_data)
+
     def get_integrations(self, name: str):
         endpoint = f"api/v1/integrations/integrations/{self.credentials.project_id}?name={name}"
         return self.request('get', endpoint)
