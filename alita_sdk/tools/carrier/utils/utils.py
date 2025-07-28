@@ -8,7 +8,11 @@ import zipfile
 import io
 from enum import Enum
 
+from langchain_core.tools import ToolException
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+
+import functools
+import traceback
 
 # =================================================================================
 # MODULE-LEVEL LOGGER
@@ -374,3 +378,40 @@ class FileType(Enum):
     JSON = ".json"
     EXCEL = ".xlsx"
     ZIP = ".zip"
+
+
+
+def tool_logger(func):
+    """
+    A decorator that provides extended, structured logging for tool execution.
+    It logs entry, exit, arguments, return values, and exceptions.
+    """
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        tool_name = self.name
+        # Combine args and kwargs for a complete picture of the input
+        all_args = {**kwargs}
+        # Handle positional arguments if any (rare for these tools)
+        arg_names = func.__code__.co_varnames[1:func.__code__.co_argcount] # [1:] to skip 'self'
+        for i, arg in enumerate(args):
+            all_args[arg_names[i]] = arg
+
+        logger.info(f"[{tool_name}] ---> Entering tool execution.")
+        logger.debug(f"[{tool_name}] Arguments: {all_args}")
+
+        try:
+            result = func(self, *args, **kwargs)
+            logger.debug(f"[{tool_name}] Raw result: {str(result)[:250]}...") # Log a preview of the result
+            logger.info(f"[{tool_name}] <--- Tool execution successful.")
+            return result
+        except Exception as e:
+            # Use ToolException for controlled errors, log others more severely
+            if isinstance(e, ToolException):
+                logger.warning(f"[{tool_name}] <--- Tool execution failed with ToolException: {e}")
+            else:
+                # Log the full stack trace for unexpected errors
+                stack_trace = traceback.format_exc()
+                logger.error(f"[{tool_name}] <--- Tool execution failed with unhandled exception: {e}\n{stack_trace}")
+            # Re-raise the exception so the framework can handle it
+            raise
+    return wrapper

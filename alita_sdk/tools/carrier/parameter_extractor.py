@@ -268,7 +268,6 @@ class ParameterExtractor:
 
         return extracted_params
 
-    # alita_sdk/tools/carrier/parameter_extractor.py
 
     def _get_expected_args(self, tool) -> Dict[str, Any]:
         """Get expected arguments - check args_schema first"""

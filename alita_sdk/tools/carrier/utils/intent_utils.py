@@ -256,7 +256,6 @@ class CarrierIntentExtractor:
         logger.critical(f"🔍 [DIAGNOSTIC] Starting _attempt_extraction (attempt {attempt})")
 
         try:
-            # PRODUCTION: Force structured output with explicit schema
             if hasattr(self.llm, 'with_structured_output'):
                 logger.critical(f"🔍 [DIAGNOSTIC] LLM has with_structured_output, creating structured LLM...")
 

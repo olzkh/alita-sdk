@@ -6,6 +6,10 @@ No business logic, configuration, or analysis results.
 from datetime import date, timedelta
 from enum import Enum
 from pydantic import Field
+from dataclasses import dataclass, field
+from typing import Dict, Optional, List, Any
+from datetime import datetime
+import logging
 
 
 # ================== ENUMS ==================
@@ -24,12 +28,6 @@ class PerformanceDirection(Enum):
     NEW = "🔵 New"
     MISSING = "⚪ Missing"
 
-
-# data_models.py - Enhanced Production-Ready Data Models
-from dataclasses import dataclass, field
-from typing import Dict, Optional, List, Any
-from datetime import datetime
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -541,12 +539,20 @@ class ExcelFormattingConfig:
     response_time_float = 2000.0
     error_rate_critical: float = 10.0
     response_time_critical: float = 2000.0
+    throughput_warning_threshold: float = 10.0
+
+    RED_COLOR = 'F7A9A9'
+    GREEN_COLOR = 'AFF2C9'
+    YELLOW_COLOR = 'F7F7A9'
+    RED_COLOR_FONT = '00F90808'
+    GREEN_COLOR_FONT = '002BBD4D'
 
     # Color schemes for Excel
-    excellent_color: str = "#4CAF50"  # Green
-    good_color: str = "#8BC34A"  # Light Green
-    warning_color: str = "#FF9800"  # Orange
-    critical_color: str = "#F44336"  # Red
+    excellent_color: str = f"#{GREEN_COLOR_FONT}"  # Green
+    good_color: str = f"#{GREEN_COLOR}"  # Light Green
+    warning_color: str = f"#{YELLOW_COLOR}"  # Orange
+    critical_color: str = f"#{RED_COLOR}"  # Red
+    critical_color_font: str = f"#{RED_COLOR_FONT}"  # Red
 
     def get_color_for_error_rate(self, error_rate: float) -> str:
         """Get Excel color code based on error rate."""

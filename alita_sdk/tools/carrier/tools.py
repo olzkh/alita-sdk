@@ -13,7 +13,7 @@ from .metrics import ToolkitMetrics
 # Import all tool classes
 from .tickets_tool import FetchTicketsTool, CreateTicketTool
 from .backend_reports_tool import GetReportsTool, GetReportByIDTool, ProcessAndGenerateReportTool
-from .backend_tests_tool import GetTestsTool, GetTestByIDTool, RunTestByIDTool, CreateBackendTestTool
+from .backend_tests_tool import GetBackendTestsTool, GetTestByIDTool, RunTestByIDTool, CreateBackendTestTool
 from .ui_reports_tool import GetUIReportsTool, GetUIReportByIDTool, GetUITestsTool
 from .run_ui_test_tool import RunUITestTool
 from .update_ui_test_schedule_tool import UpdateUITestScheduleTool
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 ATOMIC_TOOL_CLASSES: List[Type[BaseTool]] = [
     FetchTicketsTool, CreateTicketTool,
     GetReportsTool, GetReportByIDTool, ProcessAndGenerateReportTool,
-    GetTestsTool, GetTestByIDTool, RunTestByIDTool, CreateBackendTestTool,
+    GetBackendTestsTool, GetTestByIDTool, RunTestByIDTool, CreateBackendTestTool,
     GetUIReportsTool, GetUIReportByIDTool, GetUITestsTool,
     RunUITestTool, UpdateUITestScheduleTool, CreateUIExcelReportTool,
     CreateUITestTool, CancelUITestTool,
@@ -201,7 +201,8 @@ class CarrierIntentMetaTool(BaseTool):
             logger.info(f"   Available mappings: {list(self.tool_map.keys())}")
             return self._handle_unmapped_intent(intent, user_message)
 
-        logger.info(f"🛠️ [CarrierMetaTool] Selected tool: {tool_class.__name__}")
+        logger.critical(f"🔍 [DEBUG] Tool class name being processed: {tool_class.__name__}")
+
         tool_kwargs = {}
         # Add this temporary debug in tools.py before parameter extraction:
 
@@ -222,34 +223,26 @@ class CarrierIntentMetaTool(BaseTool):
 
             logger.info(f"📦 [CarrierMetaTool] Extracted parameters: {list(tool_kwargs.keys())}")
             logger.info(f"   Full parameters: {tool_kwargs}")
+            schema = getattr(tool_class, 'args_schema', None)
+            if schema:
+                # Check for any required fields in the tool's input schema
+                # This works for both Pydantic v1 (__fields__) and v2 (model_fields)
+                schema_fields = getattr(schema, 'model_fields', getattr(schema, '__fields__', {}))
+                required_fields = {name for name, field in schema_fields.items() if field.is_required()}
 
-            # Validate we have required parameters
-            if not tool_kwargs and tool_class.__name__ not in ['GetReportsTool', 'ListTestsTool']:
-                logger.error(f"❌ [CarrierMetaTool] No parameters extracted for {tool_class.__name__}")
-                if self.metrics:
-                    self.metrics.parameter_extraction_errors += 1
+                # If there are required fields that were not extracted, it's an error.
+                if required_fields and not tool_kwargs:
+                    logger.error(
+                        f"❌ [CarrierMetaTool] Missing required parameters for {tool_class.__name__}: {required_fields}")
+                    if self.metrics:
+                        self.metrics.parameter_extraction_errors += 1
 
-                # Provide specific suggestions based on tool
-                suggestions = []
-                if 'report' in tool_class.__name__.lower():
-                    suggestions = [
-                        "Include a report ID (e.g., 'generate excel report from 5134')",
-                        "Make sure the report ID is a valid number",
-                        "Try 'process report 5134' or 'analyze report 5134'"
-                    ]
-                elif 'test' in tool_class.__name__.lower():
-                    suggestions = [
-                        "Include a test ID (e.g., 'run test 123')",
-                        "Specify the test type if needed",
-                        "Try 'execute test 123' or 'start test 123'"
-                    ]
-
-                return self._format_error_response(
-                    f"Failed to extract required parameters from your request.",
-                    tool_class.__name__,
-                    suggestions
-                )
-
+                    suggestions = [f"Please provide a value for '{field}'." for field in required_fields]
+                    return self._format_error_response(
+                        f"Missing required parameters: {', '.join(required_fields)}",
+                        tool_class.__name__,
+                        suggestions
+                    )
             # Create tool instance
             logger.info(f"🏗️ [CarrierMetaTool] Creating tool instance: {tool_class.__name__}")
             tool_instance = tool_class(api_wrapper=self.api_wrapper)
@@ -522,7 +515,7 @@ ACTION_TOOL_MAP: Dict[Tuple[str, str], Type[BaseTool]] = {
     ("backend_analysis", "process_report"): ProcessAndGenerateReportTool,
 
     # Test Management
-    ("test_management", "get_tests"): GetTestsTool,
+    ("backend_test_management", "get_backend_tests"): GetBackendTestsTool,
     ("test_management", "get_test_by_id"): GetTestByIDTool,
     ("test_management", "create_backend_test"): CreateBackendTestTool,
 
@@ -535,7 +528,7 @@ ACTION_TOOL_MAP: Dict[Tuple[str, str], Type[BaseTool]] = {
     ("ui_analysis", "create_ui_excel_report"): CreateUIExcelReportTool,
 
     # UI Test Management
-    ("ui_test_management", "get_ui_tests"): GetUITestsTool,
+
     ("ui_test_management", "create_ui_test"): CreateUITestTool,
     ("ui_test_management", "update_ui_test_schedule"): UpdateUITestScheduleTool,
     ("ui_test_management", "cancel_ui_test"): CancelUITestTool,
@@ -627,7 +620,7 @@ __all__ = [
     # Tool classes (for direct imports if needed)
     "FetchTicketsTool", "CreateTicketTool",
     "GetReportsTool", "GetReportByIDTool", "ProcessAndGenerateReportTool",
-    "GetTestsTool", "GetTestByIDTool", "RunTestByIDTool", "CreateBackendTestTool",
+    "GetBackendTestsTool", "GetTestByIDTool", "RunTestByIDTool", "CreateBackendTestTool",
     "GetUIReportsTool", "GetUIReportByIDTool", "GetUITestsTool",
     "RunUITestTool", "UpdateUITestScheduleTool", "CreateUIExcelReportTool",
     "CreateUITestTool", "CancelUITestTool",

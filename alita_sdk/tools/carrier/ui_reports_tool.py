@@ -7,6 +7,7 @@ from langchain_core.tools import BaseTool, ToolException
 from pydantic.fields import Field
 from pydantic import create_model, BaseModel
 from .api_wrapper import CarrierAPIWrapper
+from .utils.utils import tool_logger
 
 logger = logging.getLogger("carrier_ui_reports_tool")
 
@@ -184,7 +185,43 @@ class GetUITestsTool(BaseTool):
         }
     )
 
-    def _run(self, name=None, include_schedules=False, include_config=False, **kwargs):
+    class GetUITestsTool(BaseTool):
+        name: str = "get_ui_tests"
+        description: str = "Get a summarized list of all available UI performance tests."
+
+        @tool_logger  # Apply the logger here as well
+        def _run(self, name=None, include_schedules=False, include_config=False, **kwargs):
+            try:
+                all_tests = self.api_wrapper.get_ui_tests_list()
+
+                if name:
+                    tests = [t for t in all_tests if name.lower() in t.get("name", "").lower()]
+                    result_descriptor = f"matching the name '{name}'"
+                else:
+                    tests = all_tests
+                    result_descriptor = "in total"
+
+                test_count = len(tests)
+
+                if test_count == 0:
+                    return f"✅ I found no UI tests {result_descriptor}."
+
+                # Create a human-readable summary
+                summary = f"✅ I found {test_count} UI tests {result_descriptor}. Here are the first 5:\n"
+
+                for test in tests[:5]:
+                    summary += f"- ID: {test.get('id')}, Name: \"{test.get('name')}\", Browser: {test.get('browser')}\n"
+
+                if test_count > 5:
+                    summary += "\n💡 You can ask for a specific test by its ID or run one directly."
+
+                return summary
+
+            except Exception as e:
+                logger.error(f"Failed to fetch UI tests: {e}")
+                raise ToolException("An error occurred while trying to fetch the list of UI tests.")
+
+    def _run_legacy(self, name=None, include_schedules=False, include_config=False, **kwargs):
         try:
             tests = self.api_wrapper.get_ui_tests_list()
             

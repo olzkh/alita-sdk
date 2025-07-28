@@ -1,25 +1,51 @@
 import logging
 import json
 import traceback
+from .utils.utils import tool_logger
 from typing import Type, Optional, List, Dict, Union
 from langchain_core.tools import BaseTool, ToolException
 from pydantic.fields import Field
 from pydantic import create_model, BaseModel
 from .api_wrapper import CarrierAPIWrapper
 
-
 logger = logging.getLogger(__name__)
 
 
-class GetTestsTool(BaseTool):
-    api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
-    name: str = "get_tests"
-    description: str = "Get list of tests from the Carrier platform."
-    args_schema: Type[BaseModel] = create_model(
-        "GetTestsInput",
-    )
+class GetTestsInput(BaseModel):
+    """Input model for GetTestsTool. Takes no parameters."""
+    pass
 
+
+class GetBackendTestsTool(BaseTool):
+    api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
+    name: str = "get_backend_tests"
+    description: str = "Get a summarized list of all available backend performance tests."
+    args_schema: Type[BaseModel] = GetTestsInput
+
+    @tool_logger
     def _run(self):
+        try:
+            tests = self.api_wrapper.get_tests_list()
+            test_count = len(tests)
+
+            if test_count == 0:
+                return "✅ I found no backend tests in this project."
+            summary = f"✅ I found {test_count} backend tests. Here are the first 5:\n"
+
+            for test in tests[:5]:
+                summary += f"- ID: {test.get('id')}, Name: \"{test.get('name')}\", Runner: {test.get('runner')}\n"
+
+            if test_count > 5:
+                summary += "\n💡 You can ask for a specific test by its ID (e.g., 'get test details for 123') or run one directly (e.g., 'run test 123')."
+
+            return summary
+
+        except Exception as e:
+            logger.error(f"Failed to fetch backend tests: {e}")
+            raise ToolException("An error occurred while trying to fetch the list of backend tests.")
+
+    @tool_logger
+    def _run_legacy(self):
         try:
             tests = self.api_wrapper.get_tests_list()
 
@@ -79,8 +105,10 @@ class RunTestByIDTool(BaseTool):
     description: str = "Execute test plan from the Carrier platform."
     args_schema: Type[BaseModel] = create_model(
         "RunTestByIdInput",
-        test_id=(int, Field(default=None, description="Test id to execute. Use test_id if user provide id in int format")),
-        name=(str, Field(default=None, description="Test name to execute. Use name if user provide name in str format")),
+        test_id=(
+            int, Field(default=None, description="Test id to execute. Use test_id if user provide id in int format")),
+        name=(
+            str, Field(default=None, description="Test name to execute. Use name if user provide name in str format")),
         test_parameters=(list, Field(
             default=None,
             description=(
@@ -200,7 +228,6 @@ class RunTestByIDTool(BaseTool):
                 # Validate and merge user-provided cloud_settings with available parameters
                 cloud_settings = self._merge_cloud_settings(available_cloud_settings, cloud_settings)
 
-
             # Build common_params dictionary
             common_params = {
                 param["name"]: param
@@ -307,7 +334,8 @@ class CreateBackendTestInput(BaseModel):
     test_type: str = Field(..., description="Test type")
     env_type: str = Field(..., description="Env type")
     entrypoint: str = Field(..., description="Entrypoint for the test (JMeter script path or Gatling simulation path)")
-    custom_cmd: str = Field(..., description="Custom command line to execute the test (e.g., -l /tmp/reports/jmeter.jtl -e -o /tmp/reports/html_report)")
+    custom_cmd: str = Field(...,
+                            description="Custom command line to execute the test (e.g., -l /tmp/reports/jmeter.jtl -e -o /tmp/reports/html_report)")
     runner: str = Field(..., description="Test runner (Gatling or JMeter)")
     source: Optional[Dict[str, Optional[str]]] = Field(
         None,

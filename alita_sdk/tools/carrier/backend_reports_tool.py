@@ -140,7 +140,17 @@ class FormattingMixin:
     @staticmethod
     def format_report_summary(report: Dict) -> Dict:
         """Format report data with conditional status indicators."""
-        status = report.get("test_status", "unknown").lower()
+        logger.info(f"🚀 Starting format_report_summary: {report}")
+        status_info = report.get("test_status", "unknown")
+        if isinstance(status_info, dict):
+            status = str(status_info.get("status", "unknown")).lower()
+            status_percentage = status_info.get("percentage")
+            status_description = status_info.get("description", "")
+        else:
+            status = str(status_info).lower()
+            status_percentage = None
+            status_description = ""
+
         status_indicators = {
             "finished": "✅",
             "failed": "❌",
@@ -151,7 +161,7 @@ class FormattingMixin:
         lg_type = report.get("lg_type", "").lower()
         pipeline_recommendations = {
             "gatling": {"type": "gatling_to_excel", "emoji": "🎯"},
-            "jmeter": {"type": "jmeter_to_excel", "emoji": "⚡"}
+            "jmeter": {"type": "jmeter_to_excel", "emoji": "⚡"},
         }
 
         recommendation = pipeline_recommendations.get(lg_type, {"type": "check_type", "emoji": "🔍"})
@@ -162,6 +172,8 @@ class FormattingMixin:
             "name": report.get("name"),
             "environment": report.get("environment"),
             "status": f"{status_indicators.get(status, '❓')} {status}",
+            "status_percentage": status_percentage,
+            "status_description": status_description,
             "vusers": report.get("vusers"),
             "duration": report.get("duration"),
             "start_time": report.get("start_time"),
@@ -177,14 +189,14 @@ class LoggingMixin:
         """Log operation start with context."""
         logger.info(f"🚀 Starting {operation}")
         for key, value in context.items():
-            logger.debug(f"   📋 {key}: {value}")
+            logger.info(f"   📋 {key}: {value}")
 
     def log_operation_success(self, operation: str, duration: float = None, **context):
         """Log successful operation completion."""
         duration_str = f" in {duration:.2f}s" if duration else ""
         logger.info(f"✅ Completed {operation}{duration_str}")
         for key, value in context.items():
-            logger.debug(f"   📊 {key}: {value}")
+            logger.info(f"   📊 {key}: {value}")
 
     def log_operation_error(self, operation: str, error: Exception, **context):
         """Log operation failure with context."""
@@ -347,7 +359,7 @@ class RunTestByIDTool(BaseCarrierTool):
         for name, value in test_params.items():
             if name in default_params:
                 default_params[name]['default'] = value
-                logger.debug(f"🔧 Override parameter {name}: {value}")
+                logger.info(f"🔧 Override parameter {name}: {value}")
 
         # Build common_params from test data
         common_params = {
@@ -716,9 +728,28 @@ class GetReportByIDTool(BaseCarrierTool):
         """Enhance report with processing recommendations."""
         enhanced = dict(report)  # Copy original report
 
-        # Add status analysis
-        status = report.get("test_status", "unknown").lower()
-        lg_type = report.get("lg_type", "").lower()
+        # Add status analysis with explicit logging and error handling
+        status_raw = report.get("test_status", "unknown")
+        if isinstance(status_raw, dict):
+            logger.error(f"💥 test_status is a dict, expected str. Value: {status_raw}")
+            status = str(status_raw.get("status", "unknown")).lower()
+        else:
+            try:
+                status = str(status_raw).lower()
+            except Exception as e:
+                logger.error(f"💥 Failed to convert test_status to lower: {status_raw} ({e})")
+                status = "unknown"
+
+        lg_type_raw = report.get("lg_type", "")
+        if isinstance(lg_type_raw, dict):
+            logger.error(f"💥 lg_type is a dict, expected str. Value: {lg_type_raw}")
+            lg_type = str(lg_type_raw.get("type", "")).lower()
+        else:
+            try:
+                lg_type = str(lg_type_raw).lower()
+            except Exception as e:
+                logger.error(f"💥 Failed to convert lg_type to lower: {lg_type_raw} ({e})")
+                lg_type = ""
 
         enhanced["processing_recommendations"] = {
             "status_assessment": self._assess_status(status),
@@ -727,6 +758,7 @@ class GetReportByIDTool(BaseCarrierTool):
             "next_steps": self._generate_next_steps(status, lg_type, error_analysis)
         }
 
+        logger.info(f"✅ Enhanced report with recommendations for status: {status}, lg_type: {lg_type}")
         return enhanced
 
     def _assess_status(self, status: str) -> Dict:
@@ -932,7 +964,7 @@ class GetReportByIDTool(BaseCarrierTool):
                     raise ToolException(f"🔍 Report '{report_id}' not found")
 
                 # Cache validation result for performance
-                logger.debug(f"✅ Report {report_id} validated and cached")
+                logger.info(f"✅ Report {report_id} validated and cached")
                 return report_data
             except Exception as e:
                 logger.error(f"💥 Report validation failed for {report_id}: {e}")
@@ -1160,7 +1192,7 @@ class GetReportByIDTool(BaseCarrierTool):
 
                 # Small delay between batches to prevent overwhelming the system
                 if batch_num < total_batches - 1:
-                    logger.debug("⏳ Brief pause between batches")
+                    logger.info("⏳ Brief pause between batches")
 
             return results
 
