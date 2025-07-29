@@ -69,10 +69,9 @@ class ExcelReportStructure:
         'Justification': 'analysis_summary'
     })
 
-    # --- THIS DICTIONARY WAS THE ROOT CAUSE OF THE 'N/A' BUG. IT IS NOW FIXED. ---
     TRANSACTION_HEADER_MAPPING: Dict[str, str] = field(default_factory=lambda: {
         # "Visual Header in Excel": "attribute_name_in_TransactionMetrics_model"
-        'Transaction': 'request_name',  # CORRECTED: Was 'name'
+        'Transaction': 'request_name',
         'Req, count': 'Total',
         'KO, count': 'KO',
         'KO, %': 'Error_pct',

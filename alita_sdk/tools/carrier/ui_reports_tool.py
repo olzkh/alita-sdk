@@ -11,6 +11,7 @@ from .utils.utils import tool_logger
 
 logger = logging.getLogger("carrier_ui_reports_tool")
 
+
 class GetUIReportsTool(BaseTool):
     api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
     name: str = "get_ui_reports"
@@ -18,11 +19,17 @@ class GetUIReportsTool(BaseTool):
     args_schema: Type[BaseModel] = create_model(
         "GetUIReportsInput",
         report_id=(str, Field(description="UI Report id to retrieve")),
-        current_date=(str, Field(default=datetime.datetime.now().strftime("%Y-%m-%d"), description="Current date in YYYY-MM-DD format (auto-filled)")),
+        current_date=(str, Field(default=datetime.datetime.now().strftime("%Y-%m-%d"),
+                                 description="Current date in YYYY-MM-DD format (auto-filled)")),
         **{
-            "name": (str, Field(default=None, description="Optional. Filter reports by name (case-insensitive, partial match)")),
-            "start_time": (str, Field(default=None, description="Start date/time for filtering reports (YYYY-MM-DD or ISO format)")),
-            "end_time": (str, Field(default=None, description="End date/time for filtering reports (YYYY-MM-DD or ISO format)")),
+            "name": (
+                str,
+                Field(default=None, description="Optional. Filter reports by name (case-insensitive, partial match)")),
+            "start_time": (
+                str,
+                Field(default=None, description="Start date/time for filtering reports (YYYY-MM-DD or ISO format)")),
+            "end_time": (
+                str, Field(default=None, description="End date/time for filtering reports (YYYY-MM-DD or ISO format)")),
         }
     )
 
@@ -140,6 +147,7 @@ class GetUIReportsTool(BaseTool):
             logger.error(f"Error searching UI reports by name: {stacktrace}")
             raise ToolException(stacktrace)
 
+
 class GetUIReportByIDTool(BaseTool):
     api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
     name: str = "get_ui_report_by_id"
@@ -172,6 +180,7 @@ class GetUIReportByIDTool(BaseTool):
             logger.error(f"Error downloading UI report: {stacktrace}")
             raise ToolException(stacktrace)
 
+
 class GetUITestsTool(BaseTool):
     api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
     name: str = "get_ui_tests"
@@ -179,74 +188,74 @@ class GetUITestsTool(BaseTool):
     args_schema: Type[BaseModel] = create_model(
         "GetUITestsInput",
         **{
-            "name": (str, Field(default=None, description="Optional. Filter tests by name (case-insensitive, partial match)")),
-            "include_schedules": (bool, Field(default=False, description="Optional. Include test schedules in the response")),
-            "include_config": (bool, Field(default=False, description="Optional. Include detailed configuration in the response")),
+            "name": (
+                str,
+                Field(default=None, description="Optional. Filter tests by name (case-insensitive, partial match)")),
+            "include_schedules": (
+                bool, Field(default=False, description="Optional. Include test schedules in the response")),
+            "include_config": (
+                bool, Field(default=False, description="Optional. Include detailed configuration in the response")),
         }
     )
 
-    class GetUITestsTool(BaseTool):
-        name: str = "get_ui_tests"
-        description: str = "Get a summarized list of all available UI performance tests."
+    @tool_logger  # Apply the logger here as well
+    def _run(self, name=None, include_schedules=False, include_config=False, **kwargs):
+        try:
+            all_tests = self.api_wrapper.get_ui_tests_list()
 
-        @tool_logger  # Apply the logger here as well
-        def _run(self, name=None, include_schedules=False, include_config=False, **kwargs):
-            try:
-                all_tests = self.api_wrapper.get_ui_tests_list()
+            if name:
+                tests = [t for t in all_tests if name.lower() in t.get("name", "").lower()]
+                result_descriptor = f"matching the name '{name}'"
+            else:
+                tests = all_tests
+                result_descriptor = "in total"
 
-                if name:
-                    tests = [t for t in all_tests if name.lower() in t.get("name", "").lower()]
-                    result_descriptor = f"matching the name '{name}'"
-                else:
-                    tests = all_tests
-                    result_descriptor = "in total"
+            test_count = len(tests)
 
-                test_count = len(tests)
+            if test_count == 0:
+                return f"✅ I found no UI tests {result_descriptor}."
 
-                if test_count == 0:
-                    return f"✅ I found no UI tests {result_descriptor}."
+            # Create a human-readable summary
+            summary = f"✅ I found {test_count} UI tests {result_descriptor}. Here are the first 5:\n"
 
-                # Create a human-readable summary
-                summary = f"✅ I found {test_count} UI tests {result_descriptor}. Here are the first 5:\n"
+            for test in tests[:5]:
+                summary += f"- ID: {test.get('id')}, Name: \"{test.get('name')}\", Browser: {test.get('browser')}\n"
 
-                for test in tests[:5]:
-                    summary += f"- ID: {test.get('id')}, Name: \"{test.get('name')}\", Browser: {test.get('browser')}\n"
+            if test_count > 5:
+                summary += "\n💡 You can ask for a specific test by its ID or run one directly."
 
-                if test_count > 5:
-                    summary += "\n💡 You can ask for a specific test by its ID or run one directly."
+            return summary
 
-                return summary
-
-            except Exception as e:
-                logger.error(f"Failed to fetch UI tests: {e}")
-                raise ToolException("An error occurred while trying to fetch the list of UI tests.")
+        except Exception as e:
+            logger.error(f"Failed to fetch UI tests: {e}")
+            raise ToolException("An error occurred while trying to fetch the list of UI tests.")
 
     def _run_legacy(self, name=None, include_schedules=False, include_config=False, **kwargs):
         try:
             tests = self.api_wrapper.get_ui_tests_list()
-            
+
             if name:
                 filtered_tests = [
-                    test for test in tests 
+                    test for test in tests
                     if name.lower() in test.get("name", "").lower()
                 ]
             else:
                 filtered_tests = tests
-                
+
             # Extract relevant fields for cleaner output
             base_fields = {
-                "id", "name", "browser", "loops", "aggregation", "parallel_runners", 
+                "id", "name", "browser", "loops", "aggregation", "parallel_runners",
                 "location", "entrypoint", "runner", "job_type"
             }
-            
+
             result_tests = []
             for test in filtered_tests:
                 trimmed = {k: test[k] for k in base_fields if k in test}
-                
+
                 # Add test_uid separately with a clear label to avoid confusion with id
                 if "test_uid" in test:
                     trimmed["test_uid"] = test["test_uid"]
-                
+
                 # Include test parameters if available
                 if "test_parameters" in test:
                     trimmed["test_parameters"] = [
@@ -258,7 +267,7 @@ class GetUITestsTool(BaseTool):
                         }
                         for param in test.get("test_parameters", [])
                     ]
-                
+
                 # Extract key info from env_vars
                 env_vars = test.get("env_vars", {})
                 if env_vars:
@@ -269,7 +278,7 @@ class GetUITestsTool(BaseTool):
                         "cpu": env_vars.get("cpu_quota"),
                         "memory": env_vars.get("memory_quota"),
                     }
-                
+
                 # Add source info
                 if "source" in test:
                     source = test["source"]
@@ -278,7 +287,7 @@ class GetUITestsTool(BaseTool):
                         "repo": source.get("repo"),
                         "branch": source.get("branch"),
                     }
-                
+
                 # Include detailed config if requested
                 if include_config:
                     # Add cloud settings
@@ -301,31 +310,31 @@ class GetUITestsTool(BaseTool):
                                 reporters_info["email_recipients"] = reporter_config.get("recipients", [])
                         if reporters_info:
                             trimmed["reporters"] = reporters_info
-                
+
                 # Include schedules if requested
                 if include_schedules and "schedules" in test:
                     active_schedules = []
                     inactive_schedules = []
-                    
+
                     for schedule in test.get("schedules", []):
                         schedule_info = {
                             "id": schedule.get("id"),
                             "name": schedule.get("name"),
                             "cron": schedule.get("cron")
                         }
-                        
+
                         if schedule.get("active"):
                             active_schedules.append(schedule_info)
                         else:
                             inactive_schedules.append(schedule_info)
-                    
+
                     trimmed["schedules"] = {
                         "active": active_schedules,
                         "inactive": inactive_schedules
                     }
-                
+
                 result_tests.append(trimmed)
-                
+
             return json.dumps(result_tests)
         except Exception:
             stacktrace = traceback.format_exc()

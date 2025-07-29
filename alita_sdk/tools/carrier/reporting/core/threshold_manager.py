@@ -1,6 +1,5 @@
 """
-SINGLE SOURCE OF TRUTH for all threshold-related operations.
-Now supports both analysis and comparison scenarios.
+threshold-related operations
 """
 
 from dataclasses import dataclass
@@ -27,7 +26,6 @@ class ThresholdDefaults:
 class ThresholdManager:
     """
     Modern threshold manager with clean architecture.
-    NO legacy compatibility - pure refactored implementation.
     """
 
     def __init__(self):
@@ -40,7 +38,6 @@ class ThresholdManager:
             user_args: Dict[str, Any] = None
     ) -> Dict[str, float]:
         """
-        --- REFACTORED AND FIXED ---
         Resolves effective threshold values from a LIST of ThresholdConfig objects
         and user arguments, ensuring it handles the modern data structure correctly.
         """

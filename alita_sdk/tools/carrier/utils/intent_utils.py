@@ -1,624 +1,547 @@
+"""
+Performance Analyst helper
+
+Author: Karen Florykian
+"""
 import logging
 import time
-from typing import Optional, Dict, Any, List
-from functools import wraps
-
+import json
 from langchain_core.pydantic_v1 import BaseModel, Field, validator
-from .prompts import build_carrier_prompt_, PERFORMANCE_ANALYST_INTENT_EXAMPLES
+from typing import Optional, Dict, Any, List, Type
+
+from .prompts import build_performance_analyst_prompt, validate_action_mapping
 
 logger = logging.getLogger(__name__)
+
+DISAMBIGUATION_PATTERNS = {
+    "get_tests": {
+        "trigger_keywords": ["get tests", "show tests", "list tests", "show me the tests"],
+        "clarification_question": "Which type of tests would you like to see?",
+        "options": [
+            {
+                "action": "get_backend_tests",
+                "task_type": "backend_test_management",
+                "description": "Backend performance tests (JMeter, Gatling)",
+                "keywords": ["backend", "performance", "jmeter", "gatling", "api", "load"]
+            },
+            {
+                "action": "get_ui_tests",
+                "task_type": "ui_test_management",
+                "description": "UI/Frontend tests (Lighthouse, Sitespeed)",
+                "keywords": ["ui", "frontend", "lighthouse", "sitespeed", "web"]
+            }
+        ]
+    },
+    "get_reports": {
+        "trigger_keywords": ["get reports", "show reports", "list reports"],
+        "clarification_question": "Which type of reports would you like to see?",
+        "options": [
+            {
+                "action": "get_reports",
+                "task_type": "backend_analysis",
+                "description": "Backend performance reports",
+                "keywords": ["backend", "performance", "load"]
+            },
+            {
+                "action": "get_ui_reports",
+                "task_type": "ui_analysis",
+                "description": "UI/Frontend performance reports",
+                "keywords": ["ui", "frontend", "lighthouse"]
+            }
+        ]
+    },
+    "create_test": {
+        "trigger_keywords": ["create test", "new test", "add test"],
+        "clarification_question": "What type of test would you like to create?",
+        "options": [
+            {
+                "action": "create_backend_test",
+                "task_type": "test_management",
+                "description": "Backend performance test (JMeter/Gatling)",
+                "keywords": ["backend", "api", "load", "stress"]
+            },
+            {
+                "action": "create_ui_test",
+                "task_type": "ui_test_management",
+                "description": "UI performance test (Lighthouse/Sitespeed)",
+                "keywords": ["ui", "frontend", "page", "web"]
+            }
+        ]
+    },
+    "run_test": {
+        "trigger_keywords": ["run test", "execute test", "start test"],
+        "clarification_question": "Which test would you like to run? Please provide the test ID or specify the type (backend or UI).",
+        "options": [
+            {
+                "action": "run_test",
+                "task_type": "test_execution",
+                "description": "Run a backend performance test",
+                "keywords": ["backend", "performance"]
+            },
+            {
+                "action": "run_ui_test",
+                "task_type": "ui_test_execution",
+                "description": "Run a UI performance test",
+                "keywords": ["ui", "frontend"]
+            }
+        ]
+    }
+}
+
+
+def detect_ambiguous_intent(user_message: str) -> Optional[Dict]:
+    """
+    Detects if a user request is ambiguous by checking for trigger phrases.
+    """
+    user_lower = user_message.lower()
+
+    for intent_key, config in DISAMBIGUATION_PATTERNS.items():
+        if any(phrase in user_lower for phrase in config.get("trigger_keywords", [])):
+            logger.info(f"[DisambiguationDetector] Matched ambiguous intent '{intent_key}'")
+            return {"resolved": False, **config}
+
+    return None
 
 
 class CarrierIntent(BaseModel):
     """
-    Enhanced intent model with validation for Performance Analytics workflows
+    Intent model with smart disambiguation capabilities.
     """
-    task_type: str = Field(..., description="Primary task category (e.g., backend_analysis, ui_test_management)")
-    action: str = Field(..., description="Specific action to perform (e.g., get_reports, run_test)")
-    entities: List[Dict[str, Any]] = Field(default_factory=list, description="Extracted entities with parameters")
-    field_requests: List[str] = Field(default_factory=list, description="Specific fields requested by user")
-    confirmation_question: str = Field(..., description="Question to confirm intent understanding")
-    rephrased_suggestion: Optional[str] = Field(None, description="Alternative phrasing suggestion")
-    confidence_score: Optional[float] = Field(None, description="Intent extraction confidence (0-1)")
+    task_type: str = Field(..., description="Primary task category")
+    action: str = Field(..., description="Specific action to perform OR 'clarify' for ambiguous requests")
+    entities: List[Dict[str, Any]] = Field(default_factory=list, description="Extracted entities")
+    tool_parameters: Dict[str, Any] = Field(default_factory=dict, description="Extracted tool parameters")
 
-    @validator('task_type')
-    def validate_task_type(cls, v):
-        """Validate task_type against known Performance Analytics categories"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Validating task_type: {repr(v)} (type: {type(v)})")
-        valid_task_types = {
-            'ticket_action', 'backend_analysis', 'ticket_management',
-            'ui_analysis', 'ui_test_management', 'ui_test_execution', 'backend_test_management',
-            'backend_test_execution'
-        }
-        if v not in valid_task_types:
-            logger.warning(f"[CarrierIntent] Unknown task_type: {v}")
-        logger.critical(f"🔍 [DIAGNOSTIC] task_type validation passed: {v}")
-        return v
+    # DISAMBIGUATION FIELDS
+    is_ambiguous: bool = Field(default=False, description="True if request needs clarification")
+    clarification_question: Optional[str] = Field(None, description="Question to ask user for clarification")
+    disambiguation_options: List[Dict[str, Any]] = Field(default_factory=list,
+                                                         description="Available options for ambiguous requests")
 
-    @validator('action')
-    def validate_action(cls, v):
-        """Add validation logging for action field"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Validating action: {repr(v)} (type: {type(v)})")
-        logger.critical(f"🔍 [DIAGNOSTIC] action validation passed: {v}")
+    # METADATA
+    confidence_score: Optional[float] = Field(None, description="Confidence in interpretation (0-1)")
+
+    @validator('disambiguation_options', pre=True)
+    def ensure_disambiguation_options_is_list(cls, v):
+        if v is None: return []
         return v
 
     @validator('entities', pre=True)
-    def validate_entities(cls, v):
-        """Add extensive validation logging for entities field"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Validating entities (PRE): {repr(v)} (type: {type(v)})")
-
-        if v is None:
-            logger.critical(f"🔍 [DIAGNOSTIC] entities is None, converting to empty list")
-            return []
-
-        if not isinstance(v, list):
-            logger.critical(f"🔍 [DIAGNOSTIC] entities is not a list, type: {type(v)}, value: {v}")
-            if isinstance(v, dict):
-                logger.critical(f"🔍 [DIAGNOSTIC] Converting dict to list of dicts: {v}")
-                return [v] if v else []
-            else:
-                logger.critical(f"🔍 [DIAGNOSTIC] Unknown entities type, using empty list")
-                return []
-
-        logger.critical(f"🔍 [DIAGNOSTIC] entities is list with {len(v)} items")
-        for i, item in enumerate(v):
-            logger.critical(f"🔍 [DIAGNOSTIC] entities[{i}]: {type(item)} = {repr(item)}")
-            if not isinstance(item, dict):
-                logger.critical(f"🔍 [DIAGNOSTIC] WARNING: entities[{i}] is not a dict!")
-
-        logger.critical(f"🔍 [DIAGNOSTIC] entities validation passed: {v}")
+    def ensure_entities_is_list(cls, v):
+        if v is None: return []
         return v
 
-    @validator('field_requests', pre=True)
-    def validate_field_requests(cls, v):
-        """Add validation logging for field_requests"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Validating field_requests (PRE): {repr(v)} (type: {type(v)})")
-
-        if v is None:
-            logger.critical(f"🔍 [DIAGNOSTIC] field_requests is None, converting to empty list")
-            return []
-
-        if not isinstance(v, list):
-            logger.critical(f"🔍 [DIAGNOSTIC] field_requests is not a list: {type(v)}, converting")
-            if isinstance(v, str):
-                return [v]
-            else:
-                return []
-
-        logger.critical(f"🔍 [DIAGNOSTIC] field_requests validation passed: {v}")
+    @validator('tool_parameters', pre=True)
+    def ensure_tool_parameters_is_dict(cls, v):
+        if v is None: return {}
         return v
 
-    @validator('confirmation_question')
-    def validate_confirmation_question(cls, v):
-        """Add validation logging for confirmation_question"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Validating confirmation_question: {repr(v)} (type: {type(v)})")
-        if not v:
-            logger.critical(f"🔍 [DIAGNOSTIC] Empty confirmation_question!")
-        logger.critical(f"🔍 [DIAGNOSTIC] confirmation_question validation passed")
-        return v
+    def needs_clarification(self) -> bool:
+        """Check if this intent requires user clarification."""
+        return self.is_ambiguous and self.action == 'clarify'
 
-    @validator('confidence_score')
-    def validate_confidence(cls, v):
-        """Ensure confidence score is between 0 and 1"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Validating confidence_score: {repr(v)} (type: {type(v)})")
-        if v is not None and not (0 <= v <= 1):
-            logger.warning(f"[CarrierIntent] Invalid confidence score: {v}")
-            return None
-        logger.critical(f"🔍 [DIAGNOSTIC] confidence_score validation passed: {v}")
-        return v
+    def get_clarification_prompt(self) -> str:
+        """Generate a user-friendly clarification prompt."""
+        if not self.needs_clarification():
+            return ""
+        prompt = self.clarification_question or "Could you please clarify your request?"
+        if self.disambiguation_options:
+            prompt += "\nHere are the options I found:"
+            for i, option in enumerate(self.disambiguation_options, 1):
+                action_desc = option.get('description', option.get('action', 'Unknown'))
+                prompt += f"\n{i}. {action_desc}"
+        return prompt
 
-    def __str__(self):
-        return f"CarrierIntent(task={self.task_type}, action={self.action}, confidence={self.confidence_score})"
+    def get_tool_parameters_for_schema(self, tool_schema: Type[BaseModel]) -> Dict[str, Any]:
+        """
+        Map extracted tool parameters to the specific tool's schema requirements.
+        This replaces the fragile ParameterExtractor.
+        """
+        if not hasattr(tool_schema, 'model_fields'):
+            return {}
 
+        mapped_params = {}
 
-def with_timeout(timeout_seconds: int = 30):
-    """Decorator to add timeout handling to LLM operations"""
+        # Direct parameter mapping first
+        for field_name, field_info in tool_schema.model_fields.items():
+            if field_name in self.tool_parameters:
+                mapped_params[field_name] = self.tool_parameters[field_name]
+                continue
 
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            start_time = time.time()
-            try:
-                logger.critical(f"🔍 [DIAGNOSTIC] Starting {func.__name__} with timeout {timeout_seconds}s")
-                result = func(*args, **kwargs)
-                execution_time = time.time() - start_time
-                logger.debug(f"[IntentExtractor] {func.__name__} completed in {execution_time:.2f}s")
-                logger.critical(f"🔍 [DIAGNOSTIC] {func.__name__} completed successfully")
-                return result
-            except Exception as e:
-                execution_time = time.time() - start_time
-                logger.critical(
-                    f"🔍 [DIAGNOSTIC] {func.__name__} failed after {execution_time:.2f}s: {type(e).__name__}: {e}")
-                if execution_time >= timeout_seconds:
-                    logger.error(f"[IntentExtractor] {func.__name__} timed out after {execution_time:.2f}s")
-                    raise TimeoutError(f"LLM operation timed out after {timeout_seconds}s")
-                raise
+        # Entity to parameter mapping for common cases
+        entity_to_param_mapping = {
+            'test_id': ['test_id', 'id'],
+            'report_id': ['report_id', 'id'],
+            'duration': ['duration', 'test_duration'],
+            'users': ['users', 'user_count', 'concurrent_users'],
+            'ramp_up': ['ramp_up', 'rampUp', 'ramp_up_time'],
+            'test_name': ['test_name', 'name'],
+            'description': ['description', 'desc']
+        }
 
-        return wrapper
+        for entity in self.entities:
+            entity_type = entity.get('type')
+            entity_value = entity.get('value')
 
-    return decorator
+            if entity_type in entity_to_param_mapping:
+                for possible_param in entity_to_param_mapping[entity_type]:
+                    if possible_param in tool_schema.model_fields and possible_param not in mapped_params:
+                        mapped_params[possible_param] = entity_value
+                        break
+
+        logger.info(f"[CarrierIntent] Mapped parameters for {tool_schema.__name__}: {mapped_params}")
+        return mapped_params
 
 
 class CarrierIntentExtractor:
     """
-    Production-ready intent extractor optimized for Performance Analytics workflows
-    with comprehensive error handling, retry logic, and performance monitoring
+    Intent extractor with built-in parameter extraction capabilities.
     """
 
-    def __init__(self, llm, intent_examples: Dict = None, max_retries: int = 3, timeout: int = 30):
-        """
-        Initialize enhanced intent extractor with production configurations
-        """
-        logger.critical(f"🔍 [DIAGNOSTIC] Initializing CarrierIntentExtractor")
-        logger.critical(f"  LLM type: {type(llm)}")
-        logger.critical(f"  Max retries: {max_retries}")
-        logger.critical(f"  Timeout: {timeout}s")
+    def __init__(self, llm, max_retries: int = 2, timeout: int = 30):
+        """Initialize with parameter extraction support"""
+        logger.info(f"[EnhancedExtractor] Initializing with parameter extraction support")
 
         self.llm = llm
-        self.intent_examples = intent_examples or PERFORMANCE_ANALYST_INTENT_EXAMPLES
         self.max_retries = max_retries
         self.timeout = timeout
 
+        # Create structured LLM with enhanced error handling
         try:
-            logger.critical(f"🔍 [DIAGNOSTIC] Creating structured LLM...")
-            self.structured_llm = self.llm.with_structured_output(schema=CarrierIntent)
-            logger.critical(f"🔍 [DIAGNOSTIC] Structured LLM created: {type(self.structured_llm)}")
-            logger.info(f"[IntentExtractor] Initialized with structured output for Performance Analytics")
+            self.structured_llm = self.llm.with_structured_output(
+                schema=CarrierIntent,
+                method="json_mode",
+                include_raw=False
+            )
+            logger.info("[EnhancedExtractor] Structured LLM created successfully")
         except Exception as e:
-            logger.critical(f"🔍 [DIAGNOSTIC] Failed to create structured LLM: {type(e).__name__}: {e}")
-            logger.error(f"[IntentExtractor] Failed to initialize structured output: {e}")
-            # Fallback to regular LLM if structured output fails
+            logger.warning(f"[EnhancedExtractor] Structured output failed, using fallback: {e}")
             self.structured_llm = self.llm
 
-        # PRODUCTION: Performance metrics
-        self.extraction_metrics = {
-            'total_attempts': 0,
+        # Performance metrics
+        self.metrics = {
+            'total_requests': 0,
             'successful_extractions': 0,
+            'disambiguation_requests': 0,
             'failed_extractions': 0,
-            'retry_activations': 0,
-            'average_execution_time': 0.0
+            'average_response_time': 0.0,
+            'parameter_extractions': 0
         }
 
-        logger.critical(f"🔍 [DIAGNOSTIC] CarrierIntentExtractor initialization complete")
-        logger.info(f"[IntentExtractor] Production extractor initialized - retries: {max_retries}, timeout: {timeout}s")
+    def extract_intent_with_parameters(self, user_message: str, tool_schema: Optional[Type[BaseModel]] = None,
+                                       context: Optional[Dict] = None) -> Optional[CarrierIntent]:
+        """
+        Extract intent and parameters in a single LLM call. This is the main entry point.
+        """
+        start_time = time.time()
+        self.metrics['total_requests'] += 1
 
-    @with_timeout(30)
+        logger.info(f"[EnhancedExtractor] Processing with parameter extraction: '{user_message}'")
+
+        try:
+            # Build enhanced prompt that includes parameter extraction instructions
+            prompt = self._build_parameter_aware_prompt(user_message, tool_schema, context)
+
+            # Execute extraction with retries
+            for attempt in range(self.max_retries):
+                try:
+                    logger.debug(f"[EnhancedExtractor] Attempt {attempt + 1}/{self.max_retries}")
+
+                    # Invoke structured LLM
+                    result = self.structured_llm.invoke(prompt)
+
+                    # Process result
+                    intent = self._process_llm_result(result, user_message)
+
+                    if intent and self._validate_intent(intent):
+                        # Update metrics
+                        response_time = time.time() - start_time
+                        self._update_success_metrics(response_time, intent)
+
+                        if intent.tool_parameters:
+                            self.metrics['parameter_extractions'] += 1
+
+                        logger.info(f"[EnhancedExtractor] Success on attempt {attempt + 1}: {intent}")
+                        return intent
+                    else:
+                        logger.warning(f"[EnhancedExtractor] Invalid intent on attempt {attempt + 1}")
+
+                except Exception as e:
+                    logger.warning(f"[EnhancedExtractor] Attempt {attempt + 1} failed: {e}")
+
+                    if attempt < self.max_retries - 1:
+                        time.sleep(0.1 * (attempt + 1))
+
+            # All attempts failed
+            self.metrics['failed_extractions'] += 1
+            logger.error(f"[EnhancedExtractor] All attempts failed for: '{user_message}'")
+            return None
+
+        except Exception as e:
+            self.metrics['failed_extractions'] += 1
+            logger.error(f"[EnhancedExtractor] Critical error: {e}")
+            return None
+
     def extract_intent(self, user_message: str, context: Optional[Dict] = None) -> Optional[CarrierIntent]:
         """
-        Extract intent with comprehensive error handling and retry logic
+        Backward compatibility method - calls the enhanced version without tool schema.
         """
-        logger.critical(f"🔍 [DIAGNOSTIC] Starting extract_intent")
-        logger.critical(f"  User message: '{user_message}'")
-        logger.critical(f"  Context: {context}")
+        return self.extract_intent_with_parameters(user_message, None, context)
 
-        self.extraction_metrics['total_attempts'] += 1
-        start_time = time.time()
+    def _build_parameter_aware_prompt(self, user_message: str, tool_schema: Optional[Type[BaseModel]],
+                                      context: Optional[Dict]) -> str:
+        """
+        Build enhanced prompt that instructs the LLM to extract both intent and parameters.
+        """
+        base_prompt = build_performance_analyst_prompt(user_message, context)
 
-        logger.info(f"[IntentExtractor] Processing Performance Analytics request: {user_message[:100]}...")
+        # Add parameter extraction instructions
+        parameter_instructions = """
 
-        for attempt in range(self.max_retries):
-            logger.critical(f"🔍 [DIAGNOSTIC] Attempt {attempt + 1}/{self.max_retries}")
+CRITICAL: Also extract tool parameters from the user message. Look for:
+- Test IDs (numbers like 215, 123)
+- Duration values (like "30 sec", "5 minutes", "300s", "2m")
+- User counts (like "10 users", "50 concurrent users")
+- Ramp up times (like "60 sec ramp", "2 min ramp up")
+- Test names or descriptions
+- Any other configuration values
 
-            try:
-                logger.critical(f"🔍 [DIAGNOSTIC] Calling _attempt_extraction...")
-                intent = self._attempt_extraction(user_message, context, attempt)
-                logger.critical(f"🔍 [DIAGNOSTIC] _attempt_extraction returned: {type(intent)} = {intent}")
+Extract these into the 'tool_parameters' field as key-value pairs. Examples:
+- "run test 215 with duration 30 sec" → tool_parameters: {"test_id": "215", "duration": "30"}
+- "execute test 123 for 5 minutes with 10 users" → tool_parameters: {"test_id": "123", "duration": "300", "users": "10"}
+- "start backend test 456 with 2 min ramp up" → tool_parameters: {"test_id": "456", "ramp_up": "120"}
 
-                if intent and self._validate_extracted_intent(intent):
-                    execution_time = time.time() - start_time
-                    self._update_success_metrics(execution_time)
+Always convert time units to seconds for duration and ramp_up parameters.
+"""
 
-                    logger.critical(f"🔍 [DIAGNOSTIC] Intent extraction successful on attempt {attempt + 1}")
-                    logger.info(f"[IntentExtractor] Intent extracted successfully on attempt {attempt + 1}")
-                    logger.debug(f"[IntentExtractor] Result: {intent}")
+        if tool_schema and hasattr(tool_schema, 'model_fields'):
+            # Add schema-specific parameter hints
+            field_names = list(tool_schema.model_fields.keys())
+            parameter_instructions += f"\nFor this specific tool, look for these parameters: {field_names}"
 
-                    return intent
-                else:
-                    logger.critical(f"🔍 [DIAGNOSTIC] Intent validation failed on attempt {attempt + 1}")
-                    logger.warning(f"[IntentExtractor] Invalid intent extracted on attempt {attempt + 1}")
+        return base_prompt + parameter_instructions
 
-            except Exception as e:
-                logger.critical(f"🔍 [DIAGNOSTIC] Exception in attempt {attempt + 1}: {type(e).__name__}: {e}")
-
-                # Check for the specific error we're hunting
-                if "'NoneType' object is not iterable" in str(e):
-                    logger.critical(f"🎯 [DIAGNOSTIC] FOUND THE ITERATION ERROR in attempt {attempt + 1}!")
-                    import traceback
-                    tb = traceback.format_exc()
-                    logger.critical(f"🎯 [DIAGNOSTIC] Full traceback:")
-                    for line_num, line in enumerate(tb.split('\n')):
-                        if line.strip():
-                            logger.critical(f"      {line_num:2d}: {line}")
-
-                logger.warning(f"[IntentExtractor] Attempt {attempt + 1} failed: {str(e)[:100]}...")
-
-                if attempt < self.max_retries - 1:
-                    self.extraction_metrics['retry_activations'] += 1
-                    # PRODUCTION: Exponential backoff with jitter
-                    wait_time = (2 ** attempt) * 0.1 + (time.time() % 0.1)
-                    logger.critical(f"🔍 [DIAGNOSTIC] Retrying in {wait_time:.2f}s...")
-                    logger.debug(f"[IntentExtractor] Retrying in {wait_time:.2f}s...")
-                    time.sleep(wait_time)
-                else:
-                    logger.critical(f"🔍 [DIAGNOSTIC] All {self.max_retries} attempts exhausted")
-                    logger.error(f"[IntentExtractor] All {self.max_retries} attempts failed")
-
-            self.extraction_metrics['failed_extractions'] += 1
-            execution_time = time.time() - start_time
-
-            logger.critical(f"🔍 [DIAGNOSTIC] Intent extraction completely failed after {execution_time:.2f}s")
-            logger.error(f"[IntentExtractor] Intent extraction completely failed after {execution_time:.2f}s")
-            return None
-
-    def _attempt_extraction(self, user_message: str, context: Optional[Dict], attempt: int) -> Optional[
-        CarrierIntent]:
-        """Single attempt at intent extraction with enhanced prompt engineering"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Starting _attempt_extraction (attempt {attempt})")
+    def _process_llm_result(self, result: Any, user_message: str) -> Optional[CarrierIntent]:
+        """
+        Process LLM result with parameter extraction support.
+        """
+        logger.debug(f"[EnhancedExtractor] Processing result type: {type(result)}")
 
         try:
-            if hasattr(self.llm, 'with_structured_output'):
-                logger.critical(f"🔍 [DIAGNOSTIC] LLM has with_structured_output, creating structured LLM...")
+            if isinstance(result, CarrierIntent):
+                logger.debug("[EnhancedExtractor] Result is already CarrierIntent")
+                return result
 
-                structured_llm = self.llm.with_structured_output(
-                    schema=CarrierIntent,
-                    method="json_mode",  # Force JSON mode
-                    include_raw=False
-                )
-                logger.critical(f"🔍 [DIAGNOSTIC] Structured LLM created: {type(structured_llm)}")
+            elif isinstance(result, dict):
+                logger.debug("[EnhancedExtractor] Result is dict, creating CarrierIntent")
+                return self._create_intent_from_dict(result)
 
-                # Create focused prompt for structured output
-                logger.critical(f"🔍 [DIAGNOSTIC] Building prompt...")
-                prompt = build_carrier_prompt_(user_message, context)
-                logger.critical(f"🔍 [DIAGNOSTIC] Prompt built, length: {len(prompt)}")
-                logger.critical(f"🔍 [DIAGNOSTIC] Prompt preview: {prompt[:200]}...")
-
-                logger.critical(f"🔍 [DIAGNOSTIC] Invoking structured LLM...")
-                result = structured_llm.invoke(prompt)
-                logger.critical(f"🔍 [DIAGNOSTIC] LLM returned: {type(result)} = {repr(result)}")
-
-                if isinstance(result, CarrierIntent):
-                    logger.critical(f"🔍 [DIAGNOSTIC] Result is already CarrierIntent - SUCCESS!")
-                    logger.critical(f"  task_type: {result.task_type}")
-                    logger.critical(f"  action: {result.action}")
-                    logger.critical(f"  entities: {result.entities}")
-                    logger.critical(f"  field_requests: {result.field_requests}")
-                    return result
-                else:
-                    logger.critical(f"🔍 [DIAGNOSTIC] Result is not CarrierIntent, type: {type(result)}")
-
-                    # Try to handle different result types
-                    if hasattr(result, 'content'):
-                        logger.critical(f"🔍 [DIAGNOSTIC] Result has content: {result.content}")
-                        # Try to parse the content as JSON and create CarrierIntent
-                        import json
-                        try:
-                            if isinstance(result.content, str):
-                                parsed = json.loads(result.content)
-                                logger.critical(f"🔍 [DIAGNOSTIC] Parsed JSON from content: {parsed}")
-                                logger.critical(f"🔍 [DIAGNOSTIC] Creating CarrierIntent from parsed JSON...")
-                                intent = CarrierIntent(**parsed)
-                                logger.critical(f"🔍 [DIAGNOSTIC] CarrierIntent created from JSON content!")
-                                return intent
-                        except Exception as parse_error:
-                            logger.critical(f"🔍 [DIAGNOSTIC] Failed to parse content as JSON: {parse_error}")
-
-                    # Try direct conversion if it's a dict
-                    if isinstance(result, dict):
-                        logger.critical(f"🔍 [DIAGNOSTIC] Result is dict, trying direct CarrierIntent creation...")
-                        logger.critical(f"🔍 [DIAGNOSTIC] Dict keys: {list(result.keys())}")
-                        for key, value in result.items():
-                            logger.critical(f"🔍 [DIAGNOSTIC] {key}: {type(value)} = {repr(value)}")
-
-                        try:
-                            intent = CarrierIntent(**result)
-                            logger.critical(f"🔍 [DIAGNOSTIC] CarrierIntent created from dict!")
-                            return intent
-                        except Exception as dict_error:
-                            logger.critical(
-                                f"🔍 [DIAGNOSTIC] Failed to create CarrierIntent from dict: {type(dict_error).__name__}: {dict_error}")
-
-                            # Check if this is our target error
-                            if "'NoneType' object is not iterable" in str(dict_error):
-                                logger.critical(
-                                    f"🎯 [DIAGNOSTIC] FOUND THE ERROR during CarrierIntent creation from dict!")
-                                logger.critical(f"🎯 [DIAGNOSTIC] This happens in Pydantic validation")
-                                logger.critical(f"🎯 [DIAGNOSTIC] Dict being processed: {result}")
-                                # Let's examine each field that could cause iteration issues
-                                logger.critical(f"🎯 [DIAGNOSTIC] Examining each field for iteration issues:")
-                                for field_name in ['entities', 'field_requests']:
-                                    if field_name in result:
-                                        field_value = result[field_name]
-                                        logger.critical(f"🎯 [DIAGNOSTIC] Field '{field_name}':")
-                                        logger.critical(f"    Type: {type(field_value)}")
-                                        logger.critical(f"    Value: {repr(field_value)}")
-                                        logger.critical(f"    Is None: {field_value is None}")
-
-                                        if field_value is not None:
-                                            logger.critical(f"    Has __iter__: {hasattr(field_value, '__iter__')}")
-                                            if hasattr(field_value, '__iter__') and not isinstance(field_value,
-                                                                                                   (str, bytes)):
-                                                try:
-                                                    logger.critical(f"    Testing iteration...")
-                                                    list_result = list(field_value)
-                                                    logger.critical(f"    Iteration successful: {list_result}")
-                                                except Exception as iter_err:
-                                                    logger.critical(
-                                                        f"    🚨 ITERATION FAILED: {type(iter_err).__name__}: {iter_err}")
-                                                    logger.critical(f"    🚨 This is likely the source of our error!")
-
-                            raise  # Re-raise the original error
+            elif hasattr(result, 'content'):
+                logger.debug("[EnhancedExtractor] Result has content, parsing JSON")
+                return self._parse_content_to_intent(result.content)
 
             else:
-                logger.critical(f"🔍 [DIAGNOSTIC] LLM does not have with_structured_output, using fallback")
-
-            # PRODUCTION: Enhanced fallback parsing with pattern matching
-            logger.critical(f"🔍 [DIAGNOSTIC] Falling back to enhanced parsing...")
-            return self._enhanced_fallback_parsing(user_message, context)
+                logger.warning(f"[EnhancedExtractor] Unexpected result type: {type(result)}")
+                return self._fallback_parsing(user_message)
 
         except Exception as e:
-            logger.critical(f"🔍 [DIAGNOSTIC] Exception in _attempt_extraction: {type(e).__name__}: {e}")
+            logger.error(f"[EnhancedExtractor] Error processing result: {e}")
+            return self._fallback_parsing(user_message)
 
-            # Special handling for our target error
-            if "'NoneType' object is not iterable" in str(e):
-                logger.critical(f"🎯 [DIAGNOSTIC] CAUGHT THE ITERATION ERROR in _attempt_extraction!")
-                import traceback
-                tb = traceback.format_exc()
-                logger.critical(f"🎯 [DIAGNOSTIC] Detailed traceback:")
-                for i, line in enumerate(tb.split('\n')):
-                    if line.strip():
-                        logger.critical(f"    {i:2d}: {line}")
-
-            logger.warning(f"[IntentExtractor] Extraction attempt failed: {e}")
-            raise
-
-    def _build_structured_prompt(self, user_message: str, context: Optional[Dict], attempt: int) -> str:
-        """Build prompt specifically designed for structured JSON output"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Building structured prompt for attempt {attempt}")
-
-        prompt = f"""
-        You are a Performance Analytics intent extractor. Extract intent from user requests and return ONLY valid JSON.
-
-        REQUIRED JSON FORMAT:
-        {{
-            "task_type": "backend_analysis|ui_analysis|test_management|test_execution|ui_test_management|ui_test_execution|ticket_action",
-            "action": "get_reports|get_report_by_id|process_report|run_test|create_ticket|etc",
-            "entities": [{{"id": "5134", "type": "report_id"}}],
-            "field_requests": [],
-            "confirmation_question": "Should I [action description]?",
-            "confidence_score": 0.9
-        }}
-
-        MAPPING RULES:
-        - "generate excel report from 5134" → task_type: "backend_analysis", action: "process_report"
-        - "run test 5134" → task_type: "test_execution", action: "run_test"
-        - "show ui reports" → task_type: "ui_analysis", action: "get_ui_reports"
-        - "create ticket" → task_type: "ticket_action", action: "create_ticket"
-
-        USER REQUEST: {user_message}
-
-        Return ONLY the JSON object, no additional text.
+    def _create_intent_from_dict(self, data: Dict) -> Optional[CarrierIntent]:
         """
+        Safely create CarrierIntent from dictionary with parameter support.
+        """
+        try:
+            safe_data = {
+                'task_type': data.get('task_type', 'unknown'),
+                'action': data.get('action', 'unknown'),
+                'entities': data.get('entities') or [],
+                'tool_parameters': data.get('tool_parameters') or {},  # NEW
+                'is_ambiguous': data.get('is_ambiguous', False),
+                'clarification_question': data.get('clarification_question'),
+                'disambiguation_options': data.get('disambiguation_options') or [],
+                'confidence_score': data.get('confidence_score')
+            }
 
-        logger.critical(f"🔍 [DIAGNOSTIC] Structured prompt created, length: {len(prompt)}")
-        return prompt
+            logger.debug(f"[EnhancedExtractor] Creating CarrierIntent with parameters: {safe_data}")
+            return CarrierIntent(**safe_data)
 
-    def _enhanced_fallback_parsing(self, user_message: str, context: Optional[Dict]) -> Optional[CarrierIntent]:
-        """Enhanced fallback parsing with better pattern recognition"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Starting enhanced fallback parsing")
-
-        patterns = {
-            r'generate.*excel.*report.*(\d+)': ('backend_analysis', 'process_report'),
-            r'excel.*report.*(\d+)': ('backend_analysis', 'process_report'),
-            r'run.*test.*(\d+)': ('test_execution', 'run_test'),
-            r'show.*ui.*report': ('ui_analysis', 'get_ui_reports'),
-            r'get.*report.*(\d+)': ('backend_analysis', 'get_report_by_id'),
-            r'create.*ticket': ('ticket_action', 'create_ticket'),
-        }
-
-        user_lower = user_message.lower()
-        logger.critical(f"🔍 [DIAGNOSTIC] Testing patterns against: '{user_lower}'")
-
-        for pattern, (task_type, action) in patterns.items():
-            import re
-            match = re.search(pattern, user_lower)
-            if match:
-                logger.critical(f"🔍 [DIAGNOSTIC] Pattern matched: {pattern} -> {task_type}, {action}")
-
-                entities = []
-                if match.groups():
-                    # Extract ID from pattern
-                    entity_id = match.group(1)
-                    entities = [{"id": entity_id, "type": "test_id"}]
-                    logger.critical(f"🔍 [DIAGNOSTIC] Extracted entity: {entities}")
-
-                logger.critical(f"🔍 [DIAGNOSTIC] Creating CarrierIntent from pattern match...")
-                try:
-                    intent = CarrierIntent(
-                        task_type=task_type,
-                        action=action,
-                        entities=entities,
-                        field_requests=[],
-                        confirmation_question=f"Should I {action.replace('_', ' ')} as requested?",
-                        confidence_score=0.8
-                    )
-                    logger.critical(f"🔍 [DIAGNOSTIC] CarrierIntent created successfully from pattern!")
-                    return intent
-                except Exception as pattern_error:
-                    logger.critical(
-                        f"🔍 [DIAGNOSTIC] Failed to create CarrierIntent from pattern: {type(pattern_error).__name__}: {pattern_error}")
-
-                    if "'NoneType' object is not iterable" in str(pattern_error):
-                        logger.critical(f"🎯 [DIAGNOSTIC] ITERATION ERROR in pattern fallback!")
-                        logger.critical(f"🎯 [DIAGNOSTIC] Entities being passed: {entities}")
-                        logger.critical(f"🎯 [DIAGNOSTIC] Field_requests being passed: []")
-
-                    raise
-
-            logger.critical(f"🔍 [DIAGNOSTIC] No pattern match found")
-            logger.warning(f"[IntentExtractor] No pattern match found for: {user_message}")
+        except Exception as e:
+            logger.error(f"[EnhancedExtractor] Failed to create CarrierIntent from dict: {e}")
+            logger.error(f"[EnhancedExtractor] Problem data: {data}")
             return None
 
-    def _validate_extracted_intent(self, intent: CarrierIntent) -> bool:
-        """Validate extracted intent for completeness and correctness"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Validating extracted intent: {intent}")
+    def _parse_content_to_intent(self, content: str) -> Optional[CarrierIntent]:
+        """
+        Parse string content to CarrierIntent.
+        """
+        try:
+            if isinstance(content, str):
+                parsed_data = json.loads(content)
+                return self._create_intent_from_dict(parsed_data)
+            else:
+                logger.warning(f"[EnhancedExtractor] Content is not string: {type(content)}")
+                return None
 
+        except json.JSONDecodeError as e:
+            logger.error(f"[EnhancedExtractor] JSON parsing failed: {e}")
+            return None
+
+    def _fallback_parsing(self, user_message: str) -> Optional[CarrierIntent]:
+        """
+        Enhanced fallback parsing with parameter extraction.
+        """
+        logger.info(f"[EnhancedExtractor] Using fallback parsing for: '{user_message}'")
+
+        # Check for disambiguation first
+        disambiguation_info = detect_ambiguous_intent(user_message)
+
+        if disambiguation_info and not disambiguation_info.get("resolved", False):
+            logger.info("[EnhancedExtractor] Fallback detected ambiguous request")
+            return CarrierIntent(
+                task_type="disambiguation",
+                action="clarify",
+                entities=[],
+                tool_parameters={},
+                is_ambiguous=True,
+                clarification_question=disambiguation_info["clarification_question"],
+                disambiguation_options=disambiguation_info["options"],
+                confidence_score=0.8
+            )
+
+        # Enhanced pattern matching with parameter extraction
+        import re
+        user_lower = user_message.lower()
+
+        # Pattern: run test X with duration Y
+        run_test_pattern = r'run.*test.*?(\d+)(?:.*?(?:duration|for).*?(\d+)\s*(sec|min|minute|s|m))?'
+        match = re.search(run_test_pattern, user_lower)
+        if match:
+            test_id = match.group(1)
+            tool_parameters = {"test_id": test_id}
+
+            # Extract duration if present
+            if match.group(2):
+                duration_value = int(match.group(2))
+                duration_unit = match.group(3) or 'sec'
+
+                # Convert to seconds
+                if duration_unit in ['min', 'minute', 'm']:
+                    duration_seconds = duration_value * 60
+                else:
+                    duration_seconds = duration_value
+
+                tool_parameters["duration"] = str(duration_seconds)
+
+            entities = [{"type": "test_id", "value": test_id}]
+
+            logger.info(f"[EnhancedExtractor] Fallback extracted parameters: {tool_parameters}")
+            return CarrierIntent(
+                task_type="test_execution",
+                action="run_test",
+                entities=entities,
+                tool_parameters=tool_parameters,
+                is_ambiguous=False,
+                confidence_score=0.7
+            )
+
+        # Add more enhanced patterns as needed...
+
+        logger.warning(f"[EnhancedExtractor] No fallback pattern matched for: '{user_message}'")
+        return None
+
+    def _validate_intent(self, intent: CarrierIntent) -> bool:
+        """
+        Enhanced validation with parameter validation.
+        """
         if not intent:
-            logger.critical(f"🔍 [DIAGNOSTIC] Validation failed: No intent object")
-            logger.debug("[IntentExtractor] Validation failed: No intent object")
             return False
 
-        # PRODUCTION: Check required fields
+        # Basic field validation
         if not intent.task_type or not intent.action:
-            logger.critical(f"🔍 [DIAGNOSTIC] Validation failed: Missing required fields")
-            logger.critical(f"  task_type: {intent.task_type}")
-            logger.critical(f"  action: {intent.action}")
-            logger.debug(
-                f"[IntentExtractor] Validation failed: Missing required fields - task_type: {intent.task_type}, action: {intent.action}")
+            logger.warning("[EnhancedExtractor] Missing required fields")
             return False
 
-        # PRODUCTION: Check confirmation question exists
-        if not intent.confirmation_question:
-            logger.critical(f"🔍 [DIAGNOSTIC] Validation failed: Missing confirmation question")
-            logger.debug("[IntentExtractor] Validation failed: Missing confirmation question")
-            return False
-
-        # PRODUCTION: Log confidence score if available
-        if intent.confidence_score is not None:
-            logger.critical(f"🔍 [DIAGNOSTIC] Intent confidence: {intent.confidence_score}")
-            logger.debug(f"[IntentExtractor] Intent confidence: {intent.confidence_score}")
-
-            # Consider low confidence as validation failure
-            if intent.confidence_score < 0.3:
-                logger.critical(f"🔍 [DIAGNOSTIC] Validation failed: Low confidence {intent.confidence_score}")
-                logger.warning(f"[IntentExtractor] Low confidence intent: {intent.confidence_score}")
+        # Special validation for disambiguation
+        if intent.needs_clarification():
+            if not intent.clarification_question:
+                logger.warning("[EnhancedExtractor] Disambiguation intent missing clarification question")
                 return False
+            logger.info("[EnhancedExtractor] Valid disambiguation intent")
+            return True
 
-        logger.critical(f"🔍 [DIAGNOSTIC] Intent validation passed successfully")
-        logger.debug("[IntentExtractor] Intent validation passed")
+        # Standard action validation
+        if not validate_action_mapping(intent.task_type, intent.action):
+            logger.warning(f"[EnhancedExtractor] Invalid action mapping: {intent.task_type} -> {intent.action}")
+            return False
+
+        # Confidence check
+        if intent.confidence_score is not None and intent.confidence_score < 0.3:
+            logger.warning(f"[EnhancedExtractor] Low confidence: {intent.confidence_score}")
+            return False
+
+        logger.debug("[EnhancedExtractor] Intent validation passed")
         return True
 
-    def _parse_unstructured_response(self, llm_response) -> Optional[CarrierIntent]:
-        """Parse unstructured LLM response as fallback when structured output fails"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Parsing unstructured response: {type(llm_response)}")
-        logger.debug("[IntentExtractor] Parsing unstructured LLM response")
+    def _update_success_metrics(self, response_time: float, intent: CarrierIntent):
+        """
+        Update performance metrics with parameter extraction tracking.
+        """
+        self.metrics['successful_extractions'] += 1
 
-        try:
-            response_text = str(llm_response.content if hasattr(llm_response, 'content') else llm_response)
-            logger.critical(f"🔍 [DIAGNOSTIC] Response text: {response_text[:200]}...")
-            print("Response text:", response_text[:100])  # Debugging output
-            import re
+        if intent.needs_clarification():
+            self.metrics['disambiguation_requests'] += 1
 
-            # Extract task_type and action using patterns
-            task_match = re.search(r'task_type["\']?\s*:\s*["\']?([^"\',\s]+)', response_text, re.IGNORECASE)
-            action_match = re.search(r'action["\']?\s*:\s*["\']?([^"\',\s]+)', response_text, re.IGNORECASE)
-
-            if task_match and action_match:
-                logger.critical(
-                    f"🔍 [DIAGNOSTIC] Extracted task_type: {task_match.group(1)}, action: {action_match.group(1)}")
-
-                try:
-                    intent = CarrierIntent(
-                        task_type=task_match.group(1),
-                        action=action_match.group(1),
-                        entities=[],
-                        field_requests=[],
-                        confirmation_question="Please confirm this interpretation is correct.",
-                        confidence_score=0.5  # Lower confidence for parsed responses
-                    )
-                    logger.critical(f"🔍 [DIAGNOSTIC] Successfully created CarrierIntent from unstructured response")
-                    return intent
-                except Exception as unstructured_error:
-                    logger.critical(
-                        f"🔍 [DIAGNOSTIC] Failed to create CarrierIntent from unstructured response: {unstructured_error}")
-
-                    if "'NoneType' object is not iterable" in str(unstructured_error):
-                        logger.critical(f"🎯 [DIAGNOSTIC] ITERATION ERROR in unstructured parsing!")
-
-                    raise
-
-            logger.critical(f"🔍 [DIAGNOSTIC] Could not extract task_type/action from unstructured response")
-            logger.warning("[IntentExtractor] Could not parse unstructured response")
-            return None
-
-        except Exception as e:
-            logger.critical(f"🔍 [DIAGNOSTIC] Error in unstructured parsing: {type(e).__name__}: {e}")
-            logger.error(f"[IntentExtractor] Error parsing unstructured response: {e}")
-            return None
-
-    def _update_success_metrics(self, execution_time: float):
-        """Update performance metrics on successful extraction"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Updating success metrics, execution_time: {execution_time}")
-
-        self.extraction_metrics['successful_extractions'] += 1
-
-        # Update rolling average execution time
-        total_successful = self.extraction_metrics['successful_extractions']
-        current_avg = self.extraction_metrics['average_execution_time']
-
-        new_avg = ((current_avg * (total_successful - 1)) + execution_time) / total_successful
-        self.extraction_metrics['average_execution_time'] = new_avg
-
-        logger.critical(f"🔍 [DIAGNOSTIC] Metrics updated - success rate: {self.get_success_rate():.2%}")
-        logger.debug(f"[IntentExtractor] Updated metrics - success rate: {self.get_success_rate():.2%}")
-
-    def get_success_rate(self) -> float:
-        """Calculate current success rate for monitoring"""
-        total = self.extraction_metrics['total_attempts']
-        if total == 0:
-            return 0.0
-        return self.extraction_metrics['successful_extractions'] / total
+        # Update average response time
+        total_success = self.metrics['successful_extractions']
+        current_avg = self.metrics['average_response_time']
+        self.metrics['average_response_time'] = ((current_avg * (total_success - 1)) + response_time) / total_success
 
     def get_metrics_summary(self) -> Dict[str, Any]:
-        """Get comprehensive metrics summary for monitoring and debugging"""
+        """
+        Get comprehensive metrics including parameter extraction stats.
+        """
+        total = self.metrics['total_requests']
         return {
-            **self.extraction_metrics,
-            'success_rate': self.get_success_rate(),
-            'retry_rate': (self.extraction_metrics['retry_activations'] /
-                           max(self.extraction_metrics['total_attempts'], 1))
+            **self.metrics,
+            'success_rate': self.metrics['successful_extractions'] / max(total, 1),
+            'disambiguation_rate': self.metrics['disambiguation_requests'] / max(total, 1),
+            'failure_rate': self.metrics['failed_extractions'] / max(total, 1),
+            'parameter_extraction_rate': self.metrics['parameter_extractions'] / max(
+                self.metrics['successful_extractions'], 1)
         }
 
     def reset_metrics(self):
-        """Reset metrics counters (useful for testing or periodic resets)"""
-        logger.critical(f"🔍 [DIAGNOSTIC] Resetting performance metrics")
-        logger.info("[IntentExtractor] Resetting performance metrics")
-        self.extraction_metrics = {
-            'total_attempts': 0,
+        """Reset all performance metrics"""
+        logger.info("[EnhancedExtractor] Resetting performance metrics")
+        self.metrics = {
+            'total_requests': 0,
             'successful_extractions': 0,
+            'disambiguation_requests': 0,
             'failed_extractions': 0,
-            'retry_activations': 0,
-            'average_execution_time': 0.0
+            'average_response_time': 0.0,
+            'parameter_extractions': 0
         }
 
 
-def create_performance_analytics_extractor(llm, custom_examples: Optional[Dict] = None) -> CarrierIntentExtractor:
+def create_performance_analytics_extractor(llm) -> CarrierIntentExtractor:
     """
-    Factory function to create optimized intent extractor for Performance Analytics
+    Factory function to create the enhanced intent extractor with parameter extraction.
     """
-    logger.critical(f"🔍 [DIAGNOSTIC] Creating performance analytics extractor")
-    logger.critical(f"  LLM type: {type(llm)}")
-    logger.critical(f"  Custom examples provided: {custom_examples is not None}")
-
-    # Merge custom examples with defaults
-    examples = {**PERFORMANCE_ANALYST_INTENT_EXAMPLES}
-    if custom_examples:
-        examples.update(custom_examples)
-        logger.critical(f"🔍 [DIAGNOSTIC] Merged {len(custom_examples)} custom examples")
+    logger.info("[Factory] Creating enhanced intent extractor with parameter extraction support")
 
     try:
         extractor = CarrierIntentExtractor(
             llm=llm,
-            intent_examples=examples,
-            max_retries=1,
+            max_retries=2,
             timeout=30
         )
-        logger.critical(f"🔍 [DIAGNOSTIC] Performance analytics extractor created successfully")
+        logger.info("[Factory] Enhanced extractor created successfully")
         return extractor
+
     except Exception as e:
-        logger.critical(f"🔍 [DIAGNOSTIC] Failed to create extractor: {type(e).__name__}: {e}")
-
-        if "'NoneType' object is not iterable" in str(e):
-            logger.critical(f"🎯 [DIAGNOSTIC] ITERATION ERROR during extractor creation!")
-
+        logger.error(f"[Factory] Failed to create enhanced extractor: {e}")
         raise
 
 
@@ -646,5 +569,4 @@ __all__ = [
     'CarrierIntentExtractor',
     'create_performance_analytics_extractor',
     'validate_intent_examples',
-    'with_timeout'
 ]

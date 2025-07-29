@@ -21,6 +21,7 @@ from .core.data_models import (
 
 logger = logging.getLogger(__name__)
 
+
 class BusinessInsightsGenerator:
     """
     Generates actionable insights from performance data.
@@ -163,9 +164,10 @@ class LegacyExcelFormatter:
             'ramp_up_period': getattr(report.summary, 'ramp_up_period', 'N/A'),
             'duration': getattr(report.summary, 'duration', 'N/A'),
             'think_time': getattr(report.summary, 'think_time', 'N/A'),
-            'date_start': report.summary.date_start.strftime(
-                '%Y-%m-%d %H:%M:%S') if report.summary.date_start else 'N/A',
-            'date_end': report.summary.date_end.strftime('%Y-%m-%d %H:%M:%S') if report.summary.date_end else 'N/A',
+            'date_start': report.summary.date_start.strftime('%Y-%m-%d %H:%M:%S')
+            if hasattr(report.summary.date_start, 'strftime') else report.summary.date_start or 'N/A',
+            'date_end': report.summary.date_end.strftime('%Y-%m-%d %H:%M:%S')
+            if hasattr(report.summary.date_end, 'strftime') else report.summary.date_end or 'N/A',
             'throughput': report.summary.throughput,
             'error_rate': report.summary.error_rate / 100.0,
             'carrier_report': getattr(report.summary, 'carrier_report', 'N/A'),

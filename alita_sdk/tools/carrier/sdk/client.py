@@ -1,3 +1,8 @@
+"""
+Carrier client
+
+Author: Karen Florykian
+"""
 import json
 import logging
 import os
@@ -169,8 +174,6 @@ class CarrierClient(BaseModel):
     def get_report_info(self, report_id: str) -> Dict[str, Any]:
         """
         🔍 Get report information by ID with comprehensive logging.
-
-        FIXED: Use existing _json_request method instead of returning raw Response.
         """
         logger.info(f"🔍 Getting report info for ID: {report_id}")
 
@@ -229,8 +232,6 @@ class CarrierClient(BaseModel):
     def get_report_file_name(self, report_id: str, extract_to: str = "/tmp") -> Tuple[Dict[str, Any], str, str]:
         """
         📄 Get report file information and download logs with comprehensive logging.
-
-        FIXED: Proper error handling and response validation.
         """
         logger.info(f"📄 Getting report file name for ID: {report_id}")
         logger.info(f"   Extract to: {extract_to}")

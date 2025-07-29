@@ -76,7 +76,7 @@ Insights and Analytics Pipelines:
 - secret_rotation: Secret rotation reports
 """
 from .etl_pipeline import ETLPipeline
-from .extractors import GatlingLogExtractor
+from .extractors import CarrierArtifactExtractor
 from .loaders import CarrierExcelLoader
 from . import transformers
 
@@ -93,14 +93,14 @@ class ETLComponentFactory:
 
         if pipeline_type == "excel_report":
             # Example for your existing CreateExcelReportTool
-            extractor = GatlingLogExtractor()
+            extractor = CarrierArtifactExtractor()
             transformer = transformers.CarrierExcelTransformer()
             loader = CarrierExcelLoader()
             return ETLPipeline(extractor, transformer, loader)
 
         elif pipeline_type == "ui_to_excel":
             # Example for your existing CreateExcelReportTool
-            extractor = GatlingLogExtractor()
+            extractor = CarrierArtifactExtractor()
             transformer = transformers.CarrierExcelTransformer()
             loader = CarrierExcelLoader()
             return ETLPipeline(extractor, transformer, loader)

@@ -37,6 +37,7 @@ class CarrierAPIWrapper(BaseModel):
     def _api_call(self, method_name: str, *args, **kwargs):
         """Generalized method to handle API calls with unified logging and error handling."""
         method = getattr(self._client, method_name)
+        logger.info(f"API args '{args}'.")
         try:
             response = method(*args, **kwargs)
             logger.info(f"API call '{method_name}' succeeded.")

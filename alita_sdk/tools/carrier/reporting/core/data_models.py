@@ -1,6 +1,8 @@
 """
 Core data models - Pure data structures only.
 No business logic, configuration, or analysis results.
+
+Author: Karen Florykian
 """
 
 from datetime import date, timedelta
@@ -173,18 +175,26 @@ class ReportSummary:
         if self.max_user_count < 0:
             raise ValueError(f"Max user count cannot be negative: {self.max_user_count}")
 
-        if self.ramp_up_period < timedelta(seconds=0):
+        if isinstance(self.ramp_up_period, timedelta):
+            if self.ramp_up_period.total_seconds() < 0:
+                raise ValueError(f"Ramp-up period cannot be negative: {self.ramp_up_period}")
+        elif self.ramp_up_period < 0:
             raise ValueError(f"Ramp-up period cannot be negative: {self.ramp_up_period}")
 
         if not (0 <= self.error_rate <= 100):
             raise ValueError(f"Error rate must be 0-100: {self.error_rate}")
 
-        if self.throughput < 0:
+        if isinstance(self.throughput, timedelta):
+            if self.throughput.total_seconds() < 0:
+                raise ValueError(f"Throughput cannot be negative: {self.throughput}")
+        elif self.throughput < 0:
             raise ValueError(f"Throughput cannot be negative: {self.throughput}")
 
-        if self.duration < timedelta(seconds=0):
+        if isinstance(self.duration, timedelta):
+            if self.duration.total_seconds() < 0:
+                raise ValueError(f"Duration cannot be negative: {self.duration}")
+        elif self.duration < 0:
             raise ValueError(f"Duration cannot be negative: {self.duration}")
-
         logger.debug(f"Validated ReportSummary with throughput: {self.throughput}")
 
     @property
@@ -200,7 +210,7 @@ class ReportSummary:
             'error_rate': self.error_rate,
             'date_start': self.date_start,
             'date_end': self.date_end,
-            'throughput': self.throughput,  # CRITICAL field
+            'throughput': self.throughput,
             'duration': self.duration,
             'think_time': self.think_time
         }

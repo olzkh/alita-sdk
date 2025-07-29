@@ -1,3 +1,8 @@
+"""
+Extractors from Carreir logic
+
+Author: Karen Florykian
+"""
 import io
 import os
 import json
@@ -12,7 +17,7 @@ from langchain_core.tools import ToolException
 logger = logging.getLogger(__name__)
 
 
-class GatlingLogExtractor(BaseExtractor):
+class CarrierArtifactExtractor(BaseExtractor):
     """
     🎯 Production-ready Gatling log extractor with comprehensive validation,
     error handling, and user guidance following legacy patterns.
@@ -20,14 +25,13 @@ class GatlingLogExtractor(BaseExtractor):
 
     def __init__(self):
         super().__init__()
-        logger.info("🎯 GatlingLogExtractor initialized")
+        logger.info("🎯 CarrierArtifactExtractor initialized")
 
     def extract(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        FIXED: Extracts Gatling log content from LOCAL files created by get_report_file_name.
-        No longer tries to download files that only exist locally.
+        Extracts Report log content from LOCAL files created by get_report_file_name.
         """
-        logger.info("🚀 Starting robust Gatling log extraction process...")
+        logger.info("🚀 Starting robust Report log extraction process...")
 
         try:
             # Step 1: Validate context
@@ -40,8 +44,6 @@ class GatlingLogExtractor(BaseExtractor):
             bucket_name = report_info.get("name", "").replace("_", "").replace(" ", "").lower()
             if not bucket_name:
                 raise ToolException(f"Could not determine bucket name from report metadata for report ID {report_id}.")
-
-            # ✅ FIX: get_report_file_name returns LOCAL file paths, not remote filenames
             logger.info("📁 Getting local file paths from get_report_file_name...")
             _, test_log_filepath, errors_log_filepath = api_wrapper.get_report_file_name(report_id)
 
@@ -50,8 +52,6 @@ class GatlingLogExtractor(BaseExtractor):
 
             logger.info(f"📄 Local test log file path: {test_log_filepath}")
             logger.info(f"📄 Local error log file path: {errors_log_filepath}")
-
-            # ✅ FIX: Read directly from local file (no download needed)
             if not os.path.exists(test_log_filepath):
                 raise ToolException(f"Local test log file not found: {test_log_filepath}")
 
@@ -61,7 +61,7 @@ class GatlingLogExtractor(BaseExtractor):
 
             logger.info(f"✅ Successfully read {len(log_content)} characters from local log file.")
 
-            # Step 3: Prepare the result with the actual content
+            # Prepare the result with the actual content
             extraction_result = self._prepare_extraction_result(
                 log_content,
                 report_info,
@@ -71,7 +71,7 @@ class GatlingLogExtractor(BaseExtractor):
                 }
             )
 
-            logger.info("✅ Gatling log extraction completed successfully")
+            logger.info("✅ Report log extraction completed successfully")
             return extraction_result
 
         except ToolException:
@@ -259,7 +259,7 @@ class GatlingLogExtractor(BaseExtractor):
             "file_paths": file_paths,
             "extraction_metadata": {
                 "timestamp": datetime.now().isoformat(),
-                "extractor_type": "GatlingLogExtractor",
+                "extractor_type": "CarrierArtifactExtractor",
                 "content_size": len(log_content),
                 "lg_type": report_info.get('lg_type', 'gatling'),
                 "report_name": report_info.get('name', 'unknown'),

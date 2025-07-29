@@ -1,5 +1,6 @@
 """
 Performance Analysis Engine
+Author: Karen Florykian
 """
 
 import logging
@@ -71,7 +72,7 @@ class PerformanceAnalyzer:
     ) -> Tuple[List[str], List[str]]:
         """
         Analyze response times with proper attribute mapping and enhanced logging.
-        FIXED: Uses correct attribute names from TransactionMetrics.
+        Uses correct attribute names from TransactionMetrics.
         """
         failed_transactions = []
         justifications = []
@@ -149,7 +150,7 @@ class PerformanceAnalyzer:
     ) -> Tuple[List[str], List[str]]:
         """
         Analyze error rates with proper attribute mapping and enhanced logging.
-        FIXED: Uses Error_pct attribute from TransactionMetrics.
+        Uses Error_pct attribute from TransactionMetrics.
         """
         logger.info(f"Analyzing error rates for {len(metrics)} transactions")
 
@@ -191,7 +192,7 @@ class PerformanceAnalyzer:
     ) -> Tuple[List[str], List[str]]:
         """
         Analyze throughput with proper calculation and enhanced logging.
-        FIXED: Calculates throughput from Total requests.
+        Calculates throughput from Total requests.
         """
         logger.info(f"Analyzing throughput for {len(metrics)} transactions")
 
@@ -234,7 +235,7 @@ class PerformanceAnalyzer:
     ) -> AnalysisResult:
         """
         Main analysis method with comprehensive logging and error handling.
-        FIXED: Accepts a full PerformanceReport object and extracts metrics internally.
+        Accepts a full PerformanceReport object and extracts metrics internally.
         """
         user_args = user_args or {}
 
@@ -334,7 +335,7 @@ class PerformanceAnalyzer:
     ) -> List[Recommendation]:
         """
         Generate structured recommendations with proper attribute mapping.
-        FIXED: Uses mapped attributes for all calculations.
+        Uses mapped attributes for all calculations.
         """
         logger.info("Generating performance recommendations...")
         recommendations = []
@@ -594,7 +595,7 @@ class PerformanceAnalyzer:
 class ComparisonAnalyzer:
     """
     Production-ready comparison analyzer with proper attribute mapping.
-    FIXED: All attribute access issues resolved.
+    All attribute access issues resolved.
     """
 
     def __init__(self, formatter: TextFormatter = None):
@@ -630,7 +631,7 @@ class ComparisonAnalyzer:
     ) -> List[ComparisonResult]:
         """
         Compare metrics with proper attribute mapping and enhanced logging.
-        FIXED: Uses mapped attributes for all comparisons.
+        Uses mapped attributes for all comparisons.
         """
         logger.info(f"Comparing {len(baseline_metrics)} baseline vs {len(current_metrics)} current metrics")
 
