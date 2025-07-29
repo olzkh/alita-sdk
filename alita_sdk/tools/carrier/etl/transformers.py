@@ -79,7 +79,6 @@ class CarrierExcelTransformer(BaseTransformer):
     ) -> PerformanceReport:
         """
         Enriches the report by performing analysis and applying the results.
-        FIXED: Aligned with the AnalysisResult data contract.
         """
         logger.info("Enriching report with threshold analysis.")
 
@@ -87,12 +86,8 @@ class CarrierExcelTransformer(BaseTransformer):
         # We need to pass the thresholds from user_args
         thresholds = ThresholdManager.get_threshold_configs(user_args)
         analysis_result = self.performance_analyzer.analyze(report, thresholds, user_args)
-
         report.build_status = analysis_result.status
-
         report.analysis_summary = analysis_result.justification
-
-        # DRY: Single line replaces 30+ lines of threshold logic!
         report.thresholds = ThresholdManager.get_threshold_configs(user_args)
 
         # Keep existing metadata logic

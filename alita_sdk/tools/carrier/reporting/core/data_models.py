@@ -252,7 +252,7 @@ class PerformanceReport:
     transactions: Dict[str, TransactionMetrics]
     build_status: PerformanceStatus = PerformanceStatus.WARNING
     analysis_summary: Optional[str] = None
-    carrier_report_url: Optional[str] = None
+    carrier_report_url: str = None
     thresholds: Optional[List[Any]] = None
     report_type: str = "GATLING"  # or "JMETER"
     generated_at: datetime = field(default_factory=datetime.now)

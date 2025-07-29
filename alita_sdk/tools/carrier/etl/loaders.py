@@ -46,7 +46,6 @@ class CarrierExcelLoader(BaseLoader):
             excel_bytes = excel_buffer.getvalue()
             excel_size = len(excel_bytes)
 
-
             self.logger.info(f"✅ Successfully rendered Excel report ({excel_size} bytes).")
 
             # Step 2: Prepare upload details
@@ -71,6 +70,7 @@ class CarrierExcelLoader(BaseLoader):
 
             return {
                 "status": "success",
+                "report_url": getattr(transformed_data, 'carrier_report_url', 'Unknown'),
                 "message": "Excel report generated and uploaded as ZIP successfully",
                 "file_name": zip_file_name,
                 "excel_file_name": file_name,

@@ -9,25 +9,20 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
-def build_performance_analyst_prompt(user_message: str, context: Optional[Dict] = None) -> str:
+def build_performance_analyst_prompt(user_message: str, context: Optional[Dict] = None,
+                                     tool_schema: Optional[Any] = None) -> str:
     """
     Enhanced prompt builder with smart disambiguation capabilities and parameter extraction
     """
     logger.info(f"[PromptBuilder] Building enhanced prompt for: {user_message}")
 
     from .intent_utils import detect_ambiguous_intent
-    # First, check if this is an ambiguous request
     disambiguation_info = detect_ambiguous_intent(user_message)
 
     if disambiguation_info and not disambiguation_info.get("resolved", False):
-        # Build disambiguation prompt
         return build_disambiguation_prompt(user_message, disambiguation_info)
-    elif disambiguation_info and disambiguation_info.get("resolved", False):
-        # Build resolved intent prompt
-        return build_resolved_intent_prompt(user_message, disambiguation_info, context)
     else:
-        # Build standard intent extraction prompt with parameter extraction
-        return build_standard_intent_prompt(user_message, context)
+        return build_standard_intent_prompt(user_message, context, tool_schema)
 
 
 def build_disambiguation_prompt(user_message: str, disambiguation_info: Dict) -> str:
@@ -63,11 +58,15 @@ Return ONLY the JSON object, no additional text.
     return prompt
 
 
-def build_resolved_intent_prompt(user_message: str, disambiguation_info: Dict, context: Optional[Dict] = None) -> str:
+def build_resolved_intent_prompt(user_message: str, disambiguation_info: Dict, context: Optional[Dict] = None,
+                                 tool_schema: Optional[Any] = None) -> str:
     """
-    Build prompt for requests where ambiguity was resolved by context
+    Build tool-schema-aware prompt for requests where ambiguity was resolved by context
     """
     logger.info(f"[PromptBuilder] Building resolved intent prompt for action: {disambiguation_info['action']}")
+
+    # Get tool-specific parameter extraction instructions
+    tool_guidance = _get_tool_parameter_guidance(disambiguation_info['action'], tool_schema)
 
     prompt = f"""
 You are a Performance Analytics Assistant. The user's request has been resolved from context.
@@ -77,24 +76,28 @@ USER REQUEST: "{user_message}"
 RESOLVED ACTION: {disambiguation_info['action']}
 RESOLVED TASK TYPE: {disambiguation_info['task_type']}
 
+{tool_guidance}
+
 Extract any additional details and parameters, then return JSON:
 
 {{
     "task_type": "{disambiguation_info['task_type']}",
     "action": "{disambiguation_info['action']}",
     "entities": [],  // Extract any entity IDs from the user message
-    "tool_parameters": {{}},  // Extract any parameter values
+    "tool_parameters": {{}},  // Extract parameter values based on tool schema
     "is_ambiguous": false,
     "clarification_question": null,
     "disambiguation_options": [],
     "confidence_score": 0.9
 }}
 
-PARAMETER EXTRACTION RULES:
+GENERAL PARAMETER EXTRACTION RULES:
 1. DURATION: Convert to seconds ("30 sec" → "30", "5 min" → "300")
 2. TEST_ID: Extract numeric IDs ("test 215" → "215")  
 3. USER_COUNT: Extract user numbers ("10 users" → "10")
 4. RAMP_UP: Convert to seconds ("2 min ramp" → "120")
+5. STRINGS: Extract names, descriptions, environments as-is
+6. NUMBERS: Extract limits, counts as integers
 
 Extract entities like test IDs, report IDs, etc. from the user message.
 
@@ -104,11 +107,17 @@ Return ONLY the JSON object, no additional text.
     return prompt
 
 
-def build_standard_intent_prompt(user_message: str, context: Optional[Dict] = None) -> str:
+def build_standard_intent_prompt(user_message: str, context: Optional[Dict] = None,
+                                 tool_schema: Optional[Any] = None) -> str:
     """
     Enhanced standard intent extraction prompt with parameter extraction capabilities
     """
     logger.info(f"[PromptBuilder] Building standard intent prompt")
+
+    # Get tool-specific guidance if available
+    tool_guidance = ""
+    if tool_schema:
+        tool_guidance = _get_tool_parameter_guidance_from_schema(tool_schema)
 
     prompt = f"""
 You are a Performance Analytics Assistant specialized in performance testing workflows and parameter extraction.
@@ -147,6 +156,8 @@ AVAILABLE TOOLS:
 - create_ticket: Create new tickets
 
 USER REQUEST: "{user_message}"
+
+{tool_guidance}
 
 EXTRACTION RULES:
 1. Use EXACT action names from the available tools list
@@ -199,6 +210,16 @@ EXAMPLES:
 {{
     "task_type": "test_execution",
     "action": "run_test",
+    "entities": [{{"type": "test_id", "value": "215"}}],
+    "tool_parameters": {{"test_id": "215", "duration": "30"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+"list all reports for WhateverNameTest'" →
+{{
+    "task_type": "test_management",
+    "action": "get_reports",
     "entities": [{{"type": "test_id", "value": "215"}}],
     "tool_parameters": {{"test_id": "215", "duration": "30"}},
     "is_ambiguous": false,
@@ -314,10 +335,113 @@ def get_disambiguation_suggestions(user_message: str) -> List[Dict[str, str]]:
     return suggestions
 
 
+def _get_tool_parameter_guidance(action: str, tool_schema: Optional[Any] = None) -> str:
+    """
+    Generate tool-specific parameter extraction guidance based on action and schema
+    """
+    # Tool-specific guidance based on action name
+    guidance_map = {
+        "get_reports": """
+TOOL-SPECIFIC PARAMETERS for get_reports:
+- tag_name: Extract tag/category names ("prod reports" → tag_name: "prod")
+- limit: Extract number limits ("show 20 reports" → limit: 20, default: 50)
+- environment: Extract environment names ("staging reports" → environment: "staging")
+
+Examples:
+"get 20 prod reports" → {"tag_name": "prod", "limit": 20}
+"show staging reports" → {"environment": "staging"}
+"list reports with limit 100" → {"limit": 100}
+""",
+
+        "get_report_by_id": """
+TOOL-SPECIFIC PARAMETERS for get_report_by_id:
+- report_id: Extract numeric report ID ("report 123" → report_id: "123")
+
+Examples:
+"get report 456" → {"report_id": "456"}
+"show report ID 789" → {"report_id": "789"}
+""",
+
+        "run_test": """
+TOOL-SPECIFIC PARAMETERS for run_test:
+- test_id: Extract numeric test ID ("test 215" → test_id: "215")
+- duration: Convert time to seconds ("30 sec" → duration: "30")
+- users: Extract user count ("10 users" → users: "10")
+- ramp_up: Convert ramp time to seconds ("2 min ramp" → ramp_up: "120")
+- environment: Extract environment ("prod" → environment: "prod")
+
+Examples:
+"run test 215 with duration 30 sec" → {"test_id": "215", "duration": "30"}
+"execute test 123 for 5 min with 10 users" → {"test_id": "123", "duration": "300", "users": "10"}
+""",
+
+        "create_backend_test": """
+TOOL-SPECIFIC PARAMETERS for create_backend_test:
+- test_name: Extract test name ("Load Test" → test_name: "Load Test")
+- users: Extract user count ("25 users" → users: "25")
+- duration: Convert time to seconds ("5 min" → duration: "300")
+- ramp_up: Convert ramp time to seconds ("60 sec ramp" → ramp_up: "60")
+- description: Extract test description
+
+Examples:
+"create test called API Load Test with 25 users" → {"test_name": "API Load Test", "users": "25"}
+""",
+
+        "get_ui_reports": """
+TOOL-SPECIFIC PARAMETERS for get_ui_reports:
+- limit: Extract number limits ("show 15 ui reports" → limit: 15)
+- test_type: Extract test type ("lighthouse reports" → test_type: "lighthouse")
+
+Examples:
+"get 15 ui reports" → {"limit": 15}
+"show lighthouse reports" → {"test_type": "lighthouse"}
+"""
+    }
+
+    base_guidance = guidance_map.get(action, "")
+
+    # Add schema-specific guidance if available
+    if tool_schema and hasattr(tool_schema, 'model_fields'):
+        schema_guidance = _get_tool_parameter_guidance_from_schema(tool_schema)
+        if schema_guidance:
+            base_guidance += f"\n\nSCHEMA-BASED PARAMETERS:\n{schema_guidance}"
+
+    return base_guidance
+
+
+def _get_tool_parameter_guidance_from_schema(tool_schema: Any) -> str:
+    """
+    Generate parameter guidance from Pydantic schema
+    """
+    if not tool_schema or not hasattr(tool_schema, 'model_fields'):
+        return ""
+    guidance_lines = []
+
+    for field_name, field_info in tool_schema.model_fields.items():
+        field_type = getattr(field_info, 'annotation', str)
+        default_value = getattr(field_info, 'default', None)
+        is_required = field_info.is_required() if hasattr(field_info, 'is_required') else True
+
+        # Generate field-specific guidance
+        type_str = str(field_type).replace('typing.', '').replace('<class \'', '').replace('\'>', '')
+
+        guidance_line = f"- {field_name} ({type_str})"
+
+        if not is_required and default_value is not None:
+            guidance_line += f" [default: {default_value}]"
+        elif is_required:
+            guidance_line += " [REQUIRED]"
+
+        guidance_lines.append(guidance_line)
+
+    if guidance_lines:
+        return "Expected parameters:\n" + "\n".join(guidance_lines)
+
+
 def build_parameter_extraction_examples() -> List[Dict[str, Any]]:
     """
     Build comprehensive examples for parameter extraction training/validation
-    """
+   """
     return [
         {
             "user_message": "run test 215 with duration 30 sec",

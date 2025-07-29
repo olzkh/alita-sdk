@@ -39,58 +39,8 @@ class GatlingConfig:
     REQUEST_MIN_PARTS: int = 6
     GROUP_MIN_PARTS: int = 6
 
-
 # =================================================================================
-# 2. EXCEL REPORTING CONSTANTS (SRP: Defining Report Structure & Semantics)
-# =================================================================================
-@dataclass(frozen=True)
-class ExcelReportStructure:
-    """
-    --- SINGLE SOURCE OF TRUTH ---
-    Defines the semantic structure and mappings for all Excel reports.
-    """
-    # --- Sheet Titles ---
-    RESULTS_SHEET: str = 'Test results'
-    COMPARISON_SHEET: str = 'Comparison'
-    TESTS_OVERVIEW_SHEET: str = 'Tests'
-
-    # --- Header & Field Mappings (Corrected to match data models) ---
-    SUMMARY_HEADER_MAPPING: Dict[str, str] = field(default_factory=lambda: {
-        'Users': 'max_user_count',
-        'Ramp Up, min': 'ramp_up_period',
-        'Duration, min': 'duration',
-        'Think time, sec': 'think_time',
-        'Start Date, EST': 'date_start',
-        'End Date, EST': 'date_end',
-        'Throughput, req/sec': 'throughput',
-        'Error rate, %': 'error_rate',
-        'Carrier Report': 'carrier_report_url',
-        'Build Status': 'build_status',
-        'Justification': 'analysis_summary'
-    })
-
-    TRANSACTION_HEADER_MAPPING: Dict[str, str] = field(default_factory=lambda: {
-        # "Visual Header in Excel": "attribute_name_in_TransactionMetrics_model"
-        'Transaction': 'request_name',
-        'Req, count': 'Total',
-        'KO, count': 'KO',
-        'KO, %': 'Error_pct',
-        'Min, sec': 'min',
-        'Avg, sec': 'average',
-        '90p, sec': 'pct_90',
-        '95p, sec': 'pct_95',
-        'Max, sec': 'max'
-    })
-
-    # --- Layout Rules ---
-    DEFAULT_COLUMN_WIDTH: int = 15
-    TRANSACTION_COLUMN_WIDTH: int = 35
-    LONG_TEXT_ROW_HEIGHT: float = 45.0
-    LONG_TEXT_CHAR_THRESHOLD: int = 125
-
-
-# =================================================================================
-# 3. EXCEL STYLING THEME (SRP: Defining Report Appearance)
+# EXCEL STYLING THEME
 # =================================================================================
 @dataclass(frozen=True)
 class ExcelStyleTheme:
@@ -144,7 +94,6 @@ class ExcelStyleTheme:
 
 # Global instances for easy, consistent import.
 GATLING_CONFIG = GatlingConfig()
-REPORT_STRUCTURE = ExcelReportStructure()
 REPORT_THEME = ExcelStyleTheme()
 
 

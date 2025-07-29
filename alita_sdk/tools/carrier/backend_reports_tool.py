@@ -106,10 +106,49 @@ class ProcessReportInput(BaseToolInput):
 
 
 class GetReportsInput(BaseToolInput):
-    """Input schema for retrieving reports with filtering."""
-    tag_name: str = Field(default="", description="🏷️ Filter by tag name")
-    limit: int = Field(default=50, ge=1, le=100, description="📊 Maximum results")
-    environment: str = Field(default="", description="🌍 Environment filter")
+    """
+    Input schema for retrieving reports with advanced filtering and sorting.
+    """
+    limit: int = Field(
+        default=5,  # Changed default to 5 as per your "latest 5" request
+        ge=1,
+        le=100,
+        description="📊 Maximum number of reports to return."
+    )
+    test_name: Optional[str] = Field(
+        default=None,
+        description="🧪 Filter by a partial or full test name (case-insensitive)."
+    )
+    entrypoint: Optional[str] = Field(
+        default=None,
+        description="🎯 Filter by the exact script entrypoint (e.g., 'tests/BasicEcommerceWithTransaction.jmx')."
+    )
+    environment: Optional[str] = Field(
+        default=None,
+        description="🌍 Filter by environment name."
+    )
+    status: Optional[str] = Field(
+        default=None,
+        description="🚦 Filter by status (e.g., 'finished', 'failed', 'success')."
+    )
+    runner_type: Optional[str] = Field(
+        default=None,
+        description="🏃 Filter by runner type (e.g., 'jmeter', 'gatling')."
+    )
+    tag_name: Optional[str] = Field(
+        default=None,
+        description="🏷️ Filter by an assigned tag."
+    )
+    sort_by: str = Field(
+        default="start_time",
+        pattern="^(start_time|name|duration|vusers)$",
+        description=" Filter by report attribute ('start_time', 'name', 'duration', 'vusers')."
+    )
+    sort_order: str = Field(
+        default="desc",
+        pattern="^(asc|desc)$",
+        description="📉 Sort order: 'asc' for ascending, 'desc' for descending."
+    )
 
 
 class GetReportByIdInput(BaseToolInput):
@@ -140,7 +179,7 @@ class FormattingMixin:
     @staticmethod
     def format_report_summary(report: Dict) -> Dict:
         """Format report data with conditional status indicators."""
-        logger.info(f"🚀 Starting format_report_summary: {report}")
+        logger.info(f"🚀 Formatting summary for report_id: {report.get('id')}, build_id: {report.get('build_id')}")
         status_info = report.get("test_status", "unknown")
         if isinstance(status_info, dict):
             status = str(status_info.get("status", "unknown")).lower()
@@ -188,21 +227,21 @@ class LoggingMixin:
     def log_operation_start(self, operation: str, **context):
         """Log operation start with context."""
         logger.info(f"🚀 Starting {operation}")
-        for key, value in context.items():
-            logger.info(f"   📋 {key}: {value}")
+        # for key, value in context.items():
+        #     logger.info(f"   📋 {key}: {value}")
 
     def log_operation_success(self, operation: str, duration: float = None, **context):
         """Log successful operation completion."""
         duration_str = f" in {duration:.2f}s" if duration else ""
         logger.info(f"✅ Completed {operation}{duration_str}")
-        for key, value in context.items():
-            logger.info(f"   📊 {key}: {value}")
+        # for key, value in context.items():
+        #     logger.info(f"   📊 {key}: {value}")
 
     def log_operation_error(self, operation: str, error: Exception, **context):
         """Log operation failure with context."""
         logger.error(f"💥 Failed {operation}: {str(error)}")
-        for key, value in context.items():
-            logger.error(f"   🔍 {key}: {value}")
+        # for key, value in context.items():
+        #     logger.error(f"   🔍 {key}: {value}")
 
 
 # =========================================================================
@@ -518,7 +557,7 @@ class ProcessAndGenerateReportTool(BaseTool):
                 return f"⚠️ Processing completed with issues: {result}"
 
             # Step 4: Format result for user
-           # return self._format_success_result(result)
+        # return self._format_success_result(result)
         except Exception as e:
             logger.error(f"💥 Processing failed for report {report_id}: {str(e)}")
             return f"❌ Failed to process report {report_id}: {str(e)}"
@@ -535,85 +574,120 @@ class ProcessAndGenerateReportTool(BaseTool):
         else:
             return f"❌ Processing failed: {result.get('error', 'Unknown error')}"
 
-
 class GetReportsTool(BaseCarrierTool):
-    """📋 Retrieves and filters performance reports."""
+    """📋 Retrieves and filters performance reports with advanced sorting."""
 
     name: str = "get_reports"
-    description: str = "📋 Get filtered list of performance reports"
+    description: str = "📋 Get a filtered and sorted list of performance reports."
     args_schema: Type[BaseModel] = GetReportsInput
 
-    def _run(self, tag_name: str = "", limit: int = 50, environment: str = "") -> str:
+    def _run(self, limit: int = 5, tag_name: Optional[str] = None, environment: Optional[str] = None,
+             test_name: Optional[str] = None, entrypoint: Optional[str] = None, status: Optional[str] = None,
+             runner_type: Optional[str] = None, sort_by: str = "start_time", sort_order: str = "desc") -> str:
         operation = "fetching reports"
         start_time = datetime.now()
 
-        self.log_operation_start(
-            operation,
-            tag_filter=tag_name or "none",
-            env_filter=environment or "none",
-            limit=limit
-        )
+        active_filters = {
+            "tag": tag_name, "environment": environment, "test_name": test_name,
+            "entrypoint": entrypoint, "status": status, "runner_type": runner_type,
+            "sort_by": sort_by, "sort_order": sort_order, "limit": limit
+        }
+        self.log_operation_start(operation, **{k: v for k, v in active_filters.items() if v is not None})
 
         try:
-            # Fetch raw reports
             raw_reports = self.api_wrapper.get_reports_list()
 
-            # Apply filters
-            filtered_reports = self._apply_filters(raw_reports, tag_name, environment, limit)
+            # Filter, sort, and then limit the reports
+            processed_reports = self._filter_and_sort_reports(
+                raw_reports, limit, sort_by, sort_order,
+                tag_name=tag_name, environment=environment, test_name=test_name,
+                entrypoint=entrypoint, status=status, runner_type=runner_type
+            )
 
             duration = (datetime.now() - start_time).total_seconds()
             self.log_operation_success(
-                operation,
-                duration,
+                operation, duration,
                 total_fetched=len(raw_reports),
-                filtered_count=len(filtered_reports)
+                returned_count=len(processed_reports)
             )
 
             return json.dumps({
-                "message": f"📋 Found {len(filtered_reports)} reports matching criteria",
-                "filtering_applied": {
-                    "tag_name": tag_name or "none",
-                    "environment": environment or "none",
-                    "limit": limit
-                },
-                "statistics": {
-                    "total_available": len(raw_reports),
-                    "returned": len(filtered_reports),
-                    "processing_time_ms": round(duration * 1000, 2)
-                },
-                "reports": filtered_reports
+                "message": f"📋 Found {len(processed_reports)} reports matching criteria.",
+                "filtering_applied": {k: v for k, v in active_filters.items() if v is not None},
+                "reports": [self.format_report_summary(report) for report in processed_reports]
             }, indent=2)
 
         except Exception as e:
             self.handle_api_error(operation, e)
 
-    def _apply_filters(self, reports: List[Dict], tag_filter: str,
-                       env_filter: str, limit: int) -> List[Dict]:
-        """Apply filtering with conditional logic."""
-        filtered = []
+    def _filter_and_sort_reports(self, reports: List[Dict], limit: int, sort_by: str, sort_order: str, **filters) -> \
+            List[Dict]:
+        """Apply filters, sort the results, and then apply the limit."""
 
+        # This mapping defines how filter names map to keys in the report data.
+        # To add a new filter, only add a line here and to the Pydantic model.
+        filter_mapping = {
+            'test_name': 'name',
+            'entrypoint': 'test_config.entrypoint',
+            'environment': 'environment',
+            'runner_type': 'lg_type',
+            'status': 'test_status.status'
+        }
+
+        # --- Filtering Stage ---
+        filtered_list = []
         for report in reports:
-            # Tag filtering
-            if tag_filter:
-                tags = report.get("tags", [])
-                tag_titles = [tag.get("title", "") for tag in tags if isinstance(tag, dict)]
-                if tag_filter not in tag_titles:
+            match = True
+            for filter_key, filter_value in filters.items():
+                if filter_value is None:
                     continue
 
-            # Environment filtering
-            if env_filter:
-                report_env = report.get("environment", "").lower()
-                if env_filter.lower() not in report_env:
-                    continue
+                report_value = self._get_nested_value(report, filter_mapping.get(filter_key))
 
-            # Apply limit
-            if len(filtered) >= limit:
-                break
+                if filter_key == 'tag_name':
+                    tags = report.get("tags", [])
+                    tag_titles = [str(tag.get("title", "")).lower() for tag in tags if isinstance(tag, dict)]
+                    if filter_value.lower() not in tag_titles:
+                        match = False;
+                        break
+                elif report_value is None or filter_value.lower() not in str(report_value).lower():
+                    match = False;
+                    break
 
-            # Format and add
-            filtered.append(self.format_report_summary(report))
+            if match:
+                filtered_list.append(report)
 
-        return filtered
+        # --- Sorting Stage ---
+        is_reverse = sort_order == 'desc'
+
+        def sort_key_func(report):
+            # Handle sorting by start_time by parsing the string to a datetime object
+            if sort_by == 'start_time':
+                time_str = self._get_nested_value(report, sort_by)
+                return datetime.fromisoformat(time_str.replace('Z', '+00:00')) if time_str else datetime.min
+            # For other fields, use the raw value, defaulting to 0 for numeric types
+            return self._get_nested_value(report, sort_by) or 0
+
+        try:
+            sorted_list = sorted(filtered_list, key=sort_key_func, reverse=is_reverse)
+        except (TypeError, ValueError) as e:
+            self.log_operation_error("sorting reports", e, sort_by=sort_by)
+            raise ToolException(f"Failed to sort reports by '{sort_by}'. Ensure the field is valid.")
+
+        return sorted_list[:limit]
+
+    def _get_nested_value(self, data: Dict, key_path: Optional[str]) -> Any:
+        """Safely retrieve a value from a nested dictionary using a dot-separated path."""
+        if not key_path:
+            return None
+        keys = key_path.split('.')
+        value = data
+        for key in keys:
+            if isinstance(value, dict):
+                value = value.get(key)
+            else:
+                return None
+        return value
 
 
 class GetReportByIDTool(BaseCarrierTool):

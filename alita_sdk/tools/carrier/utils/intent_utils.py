@@ -9,7 +9,7 @@ import json
 from langchain_core.pydantic_v1 import BaseModel, Field, validator
 from typing import Optional, Dict, Any, List, Type
 
-from .prompts import build_performance_analyst_prompt, validate_action_mapping
+from .prompts import validate_action_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -231,15 +231,17 @@ class CarrierIntentExtractor:
     def extract_intent_with_parameters(self, user_message: str, tool_schema: Optional[Type[BaseModel]] = None,
                                        context: Optional[Dict] = None) -> Optional[CarrierIntent]:
         """
-        Extract intent and parameters in a single LLM call. This is the main entry point.
+        Extract intent and parameters in a single LLM call with tool schema awareness.
         """
         start_time = time.time()
         self.metrics['total_requests'] += 1
 
-        logger.info(f"[EnhancedExtractor] Processing with parameter extraction: '{user_message}'")
+        logger.info(f"[EnhancedExtractor] Processing with schema-aware parameter extraction: '{user_message}'")
+        if tool_schema:
+            logger.info(f"[EnhancedExtractor] Using tool schema: {tool_schema.__name__}")
 
         try:
-            # Build enhanced prompt that includes parameter extraction instructions
+            # Build schema-aware prompt
             prompt = self._build_parameter_aware_prompt(user_message, tool_schema, context)
 
             # Execute extraction with retries
@@ -260,6 +262,7 @@ class CarrierIntentExtractor:
 
                         if intent.tool_parameters:
                             self.metrics['parameter_extractions'] += 1
+                            logger.info(f"[EnhancedExtractor] Extracted parameters: {intent.tool_parameters}")
 
                         logger.info(f"[EnhancedExtractor] Success on attempt {attempt + 1}: {intent}")
                         return intent
@@ -291,35 +294,13 @@ class CarrierIntentExtractor:
     def _build_parameter_aware_prompt(self, user_message: str, tool_schema: Optional[Type[BaseModel]],
                                       context: Optional[Dict]) -> str:
         """
-        Build enhanced prompt that instructs the LLM to extract both intent and parameters.
+        Use the enhanced prompt builder that's now tool-schema aware
         """
-        base_prompt = build_performance_analyst_prompt(user_message, context)
+        # Import here to avoid circular imports
+        from .prompts import build_performance_analyst_prompt
 
-        # Add parameter extraction instructions
-        parameter_instructions = """
-
-CRITICAL: Also extract tool parameters from the user message. Look for:
-- Test IDs (numbers like 215, 123)
-- Duration values (like "30 sec", "5 minutes", "300s", "2m")
-- User counts (like "10 users", "50 concurrent users")
-- Ramp up times (like "60 sec ramp", "2 min ramp up")
-- Test names or descriptions
-- Any other configuration values
-
-Extract these into the 'tool_parameters' field as key-value pairs. Examples:
-- "run test 215 with duration 30 sec" → tool_parameters: {"test_id": "215", "duration": "30"}
-- "execute test 123 for 5 minutes with 10 users" → tool_parameters: {"test_id": "123", "duration": "300", "users": "10"}
-- "start backend test 456 with 2 min ramp up" → tool_parameters: {"test_id": "456", "ramp_up": "120"}
-
-Always convert time units to seconds for duration and ramp_up parameters.
-"""
-
-        if tool_schema and hasattr(tool_schema, 'model_fields'):
-            # Add schema-specific parameter hints
-            field_names = list(tool_schema.model_fields.keys())
-            parameter_instructions += f"\nFor this specific tool, look for these parameters: {field_names}"
-
-        return base_prompt + parameter_instructions
+        # Use the enhanced prompt builder with tool schema
+        return build_performance_analyst_prompt(user_message, context, tool_schema)
 
     def _process_llm_result(self, result: Any, user_message: str) -> Optional[CarrierIntent]:
         """

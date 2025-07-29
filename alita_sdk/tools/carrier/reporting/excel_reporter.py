@@ -330,7 +330,7 @@ class ExcelReporter:
         next_row = self.formatter.apply_title_section_formatting(ws, report, insights)
         self.formatter.apply_transaction_table_formatting(ws, report, next_row, thresholds)
 
-        logger.info("Production Excel report generated successfully.")
+        logger.info("Excel report generated successfully.")
         return wb
 
     def generate_workbook_with_intent(self, report: PerformanceReport, query: str = "") -> Workbook:
