@@ -24,19 +24,23 @@ logger = logging.getLogger(__name__)
 
 
 # ====================================================================================
-# ORCHESTRATION ENGINE WITH PROPER PARAMETER EXTRACTION
+# ORCHESTRATION ENGINE
 # ====================================================================================
-# In your tools.py file, replace the CarrierOrchestrationEngine class with this updated version:
 
 class CarrierOrchestrationEngine:
     """
-    A robust, stateful orchestrator that manages the entire conversation,
-    with enhanced LLM-based parameter extraction.
+    Streamlined orchestrator with explicit error handling and simplified state management.
     """
 
     def __init__(self, llm: Any, api_wrapper: CarrierAPIWrapper, tool_class_map: Dict[str, Type[BaseTool]]):
-        logger.info("[OrchestrationEngine] Initializing with LLM-based parameter extraction.")
-        self.intent_extractor = CarrierIntentExtractor(llm)
+        logger.info("[OrchestrationEngine] Initializing streamlined orchestrator")
+
+        try:
+            self.intent_extractor = CarrierIntentExtractor(llm)
+        except Exception as e:
+            logger.error(f"[OrchestrationEngine] Failed to initialize intent extractor: {e}")
+            raise RuntimeError(f"Orchestrator initialization failed: {e}")
+
         self.api_wrapper = api_wrapper
         self.tool_class_map = tool_class_map
         self.session_context: Dict[str, Any] = {}
@@ -44,13 +48,12 @@ class CarrierOrchestrationEngine:
     def _get_or_create_session(self, session_id: str) -> Dict:
         """Gets or creates a session context."""
         if session_id not in self.session_context:
-            logger.critical(f"🧠 [STATE] Creating NEW session: {session_id}")
+            logger.info(f"[OrchestrationEngine] Creating new session: {session_id}")
             self.session_context[session_id] = {
                 "state": "START",
                 "action": None,
                 "task_type": None,
-                "entities": {},
-                "extracted_parameters": {},
+                "accumulated_parameters": {},
                 "clarification_options": [],
                 "original_intent": None
             }
@@ -59,147 +62,161 @@ class CarrierOrchestrationEngine:
     def _clear_session(self, session_id: str):
         """Resets the session."""
         if session_id in self.session_context:
-            logger.critical(f"🧠 [STATE] Clearing session: {session_id}")
+            logger.info(f"[OrchestrationEngine] Clearing session: {session_id}")
             del self.session_context[session_id]
 
     def process_request(self, user_message: str, session_id: str = "default") -> Dict[str, Any]:
-        """Processes a user request using enhanced LLM-based parameter extraction."""
+        """
+        Process user request with explicit error handling and simplified flow.
+        """
         session = self._get_or_create_session(session_id)
-        logger.critical(f"🧠 [STATE] Processing request. Session '{session_id}' is in state: {session['state']}")
-        logger.critical(f"   - Current Action: {session['action']}")
-        logger.critical(f"   - Accumulated Entities: {session['entities']}")
+        logger.info(f"[OrchestrationEngine] Processing request in session '{session_id}', state: {session['state']}")
 
-        # 1. Get the tool schema if we know the action
-        tool_schema = None
-        if session['action']:
+        try:
+            # 1. Get the tool schema if we know the action
+            tool_schema = None
+            if session['action']:
+                tool_class = self.tool_class_map.get(session['action'])
+                if tool_class and hasattr(tool_class, 'args_schema'):
+                    tool_schema = tool_class.args_schema
+
+            # 2. Extract intent with explicit error handling
+            try:
+                current_intent = self.intent_extractor.extract_intent_with_parameters(
+                    user_message,
+                    tool_schema=tool_schema
+                )
+            except RuntimeError as e:
+                logger.error(f"[OrchestrationEngine] Intent extraction failed: {e}")
+                self._clear_session(session_id)
+                return self._create_error_response(
+                    "I'm having trouble understanding your request. Please try rephrasing it.")
+
+            # Store the intent for context
+            session['original_intent'] = current_intent
+
+            # 3. Update accumulated parameters
+            session['accumulated_parameters'].update(current_intent.tool_parameters)
+
+            logger.info(f"[OrchestrationEngine] Accumulated parameters: {session['accumulated_parameters']}")
+
+            # 4. STATE MACHINE LOGIC
+            if session['state'] == 'AWAITING_CLARIFICATION':
+                resolved_option = self._find_resolved_option(user_message, session['clarification_options'])
+                if resolved_option:
+                    logger.info(f"[OrchestrationEngine] Clarification resolved to: {resolved_option['action']}")
+                    session['action'] = resolved_option['action']
+                    session['task_type'] = resolved_option['task_type']
+                    session['state'] = 'AWAITING_PARAMS'
+                else:
+                    logger.warning("[OrchestrationEngine] Clarification failed, re-prompting")
+                    return self._create_clarification_response(clarification_options=session['clarification_options'])
+
+            # 5. Determine action if not set
+            if not session['action']:
+                if current_intent.needs_clarification():
+                    logger.info("[OrchestrationEngine] Intent requires clarification")
+                    session['state'] = 'AWAITING_CLARIFICATION'
+                    session['clarification_options'] = current_intent.disambiguation_options
+                    return self._create_clarification_response(
+                        clarification_options=current_intent.disambiguation_options,
+                        question_text=current_intent.clarification_question
+                    )
+                else:
+                    logger.info(f"[OrchestrationEngine] Intent resolved to action: {current_intent.action}")
+                    session['action'] = current_intent.action
+                    session['task_type'] = current_intent.task_type
+
+            # 6. Validate tool exists
             tool_class = self.tool_class_map.get(session['action'])
-            if tool_class and hasattr(tool_class, 'args_schema'):
-                tool_schema = tool_class.args_schema
+            if not tool_class:
+                self._clear_session(session_id)
+                return self._create_error_response(f"Action '{session['action']}' is not available.")
 
-        # 2. Extract intent AND parameters in a single LLM call
-        current_intent = self.intent_extractor.extract_intent_with_parameters(
-            user_message,
-            tool_schema=tool_schema
-        )
+            # 7. Check for missing required parameters
+            final_params = session['accumulated_parameters']
+            missing_params = self._get_missing_params(tool_class, final_params)
 
-        if not current_intent:
-            return self._create_error_response("I couldn't understand your request. Could you please rephrase it?")
-
-        # Store the full intent for later use
-        session['original_intent'] = current_intent
-
-        # 3. Fuse new entities into the session
-        for entity in current_intent.entities:
-            session['entities'][entity['type']] = entity['value']
-
-        # 4. Fuse extracted parameters into the session
-        session['extracted_parameters'].update(current_intent.tool_parameters)
-
-        logger.critical(f"   - Fused Entities: {session['entities']}")
-        logger.critical(f"   - Extracted Parameters: {session['extracted_parameters']}")
-
-        # 5. STATE MACHINE LOGIC (unchanged)
-        if session['state'] == 'AWAITING_CLARIFICATION':
-            resolved_option = self._find_resolved_option(user_message, session['clarification_options'])
-            if resolved_option:
-                logger.critical(f"   - CLARIFICATION SUCCEEDED. Resolved to action: {resolved_option['action']}")
-                session['action'] = resolved_option['action']
-                session['task_type'] = resolved_option['task_type']
+            if not missing_params:
+                logger.info(f"[OrchestrationEngine] All parameters satisfied, executing: {session['action']}")
+                action_to_execute = session['action']
+                self._clear_session(session_id)
+                return self._execute_tool_action(action_to_execute, final_params)
+            else:
+                logger.info(f"[OrchestrationEngine] Missing parameters: {missing_params}")
                 session['state'] = 'AWAITING_PARAMS'
-            else:
-                logger.warning("   - CLARIFICATION FAILED. Re-prompting.")
-                return self._create_clarification_response(clarification_options=session['clarification_options'])
+                question = f"To run the '{session['action']}' tool, I still need: {', '.join(missing_params)}."
+                return self._create_clarification_response(question_text=question)
 
-        # 6. If we don't have an action yet, determine one
-        if not session['action']:
-            if current_intent.needs_clarification():
-                logger.critical("   - Intent is AMBIGUOUS. Transitioning to AWAITING_CLARIFICATION.")
-                session['state'] = 'AWAITING_CLARIFICATION'
-                session['clarification_options'] = current_intent.disambiguation_options
-                return self._create_clarification_response(clarification_options=current_intent.disambiguation_options,
-                                                           question_text=current_intent.clarification_question)
-            else:
-                logger.critical(f"   - Intent is UNAMBIGUOUS. Setting action to: {current_intent.action}")
-                session['action'] = current_intent.action
-                session['task_type'] = current_intent.task_type
-
-        # 7. Check if we have a valid tool for the action
-        tool_class = self.tool_class_map.get(session['action'])
-        if not tool_class:
+        except Exception as e:
+            logger.error(f"[OrchestrationEngine] Unexpected error processing request: {e}")
             self._clear_session(session_id)
-            return self._create_error_response(f"Action '{session['action']}' is not a valid tool.")
-
-        # 8. Use the enhanced parameter extraction from CarrierIntent
-        if hasattr(tool_class, 'args_schema'):
-            extracted_params = current_intent.get_tool_parameters_for_schema(tool_class.args_schema)
-        else:
-            extracted_params = session['extracted_parameters']
-
-        # 9. Check for missing required parameters
-        logger.critical(f"   - Final extracted parameters: {extracted_params}")
-        missing_params = self._get_missing_params(tool_class, extracted_params)
-
-        if not missing_params:
-            logger.critical(f"   - All parameters satisfied for action '{session['action']}'. EXECUTING.")
-            action_to_execute = session['action']
-            self._clear_session(session_id)
-            return self._execute_tool_action(action_to_execute, extracted_params)
-        else:
-            logger.critical(f"   - Missing parameters for '{session['action']}': {missing_params}. AWAITING_PARAMS.")
-            session['state'] = 'AWAITING_PARAMS'
-            question = f"To run the '{session['action']}' tool, I still need the following information: {', '.join(missing_params)}."
-            return self._create_clarification_response(question_text=question)
+            return self._create_error_response("An unexpected error occurred. Please try again.")
 
     def _get_missing_params(self, tool_class: Type[BaseTool], provided_params: Dict) -> List[str]:
-        """Checks the tool's args_schema to find what's missing."""
+        """Check tool's schema for missing required parameters."""
         if not hasattr(tool_class, 'args_schema'):
             return []
 
-        # Get required fields from the Pydantic model
         required_fields = []
-        logger.critical(f"🔍 [PARAMS] Checking required fields for {tool_class.__name__}")
+        logger.info(f"[OrchestrationEngine] Checking required fields for {tool_class.__name__}")
 
-        for field_name, field_info in tool_class.args_schema.model_fields.items():
-            # Check if field is required (no default value)
-            if field_info.is_required():
-                required_fields.append(field_name)
-                logger.critical(f"🔍 [PARAMS] Required field: {field_name}")
+        try:
+            for field_name, field_info in tool_class.args_schema.model_fields.items():
+                if field_info.is_required():
+                    required_fields.append(field_name)
+                    logger.debug(f"[OrchestrationEngine] Required field: {field_name}")
 
-        provided_keys = set(provided_params.keys())
-        missing = [field for field in required_fields if field not in provided_keys]
+            provided_keys = set(provided_params.keys())
+            missing = [field for field in required_fields if field not in provided_keys]
 
-        logger.critical(f"🔍 [PARAMS] Required: {required_fields}")
-        logger.critical(f"🔍 [PARAMS] Provided: {list(provided_keys)}")
-        logger.critical(f"🔍 [PARAMS] Missing: {missing}")
+            logger.info(
+                f"[OrchestrationEngine] Required: {required_fields}, Provided: {list(provided_keys)}, Missing: {missing}")
+            return missing
 
-        return missing
+        except Exception as e:
+            logger.error(f"[OrchestrationEngine] Error checking parameters: {e}")
+            return []
 
     def _execute_tool_action(self, action: str, params: Dict) -> Dict[str, Any]:
-        """Executes the tool with the properly extracted parameters."""
-        logger.info(f"[OrchestrationEngine] Executing resolved action: {action}")
+        """Execute the tool with proper error handling."""
+        logger.info(f"[OrchestrationEngine] Executing action: {action}")
         tool_class = self.tool_class_map.get(action)
+
+        if not tool_class:
+            return self._create_error_response(f"Tool '{action}' not found.")
+
         try:
             tool_instance = tool_class(api_wrapper=self.api_wrapper)
-            logger.info(f"[OrchestrationEngine] Invoking tool '{tool_class.__name__}' with params: {params}")
+            logger.info(f"[OrchestrationEngine] Invoking {tool_class.__name__} with params: {params}")
             result = tool_instance._run(**params)
-            return {'type': 'tool_execution_result', 'action': action, 'result': result}
+            return {
+                'type': 'tool_execution_result',
+                'action': action,
+                'result': result
+            }
         except Exception as e:
-            logger.exception(f"[OrchestrationEngine] An unexpected error occurred during tool execution.")
-            return self._create_error_response(f"A system error occurred while running the {action} tool: {str(e)}")
+            logger.error(f"[OrchestrationEngine] Tool execution failed: {e}")
+            return self._create_error_response(f"Failed to execute {action}: {str(e)}")
 
     def _create_clarification_response(self, clarification_options: Optional[List] = None,
                                        question_text: Optional[str] = None) -> Dict[str, Any]:
-        """Creates a standardized clarification response."""
+        """Create standardized clarification response."""
         if clarification_options:
             question = question_text or "Could you please clarify?"
             options_text = "\n".join(
-                [f"{i + 1}. {opt['description']}" for i, opt in enumerate(clarification_options)])
+                [f"{i + 1}. {opt['description']}" for i, opt in enumerate(clarification_options)]
+            )
             message = f"❓ {question}\nHere are the options I found:\n{options_text}"
             return {'type': 'clarification_request', 'message': message}
-        return {'type': 'clarification_request', 'message': question_text or "I need more information."}
+
+        return {
+            'type': 'clarification_request',
+            'message': question_text or "I need more information."
+        }
 
     def _find_resolved_option(self, user_message: str, options: List[Dict]) -> Optional[Dict]:
-        """Finds the matching option from the user's clarification response."""
+        """Find matching option from clarification response."""
         user_lower = user_message.lower().strip()
         for option in options:
             if any(keyword in user_lower for keyword in option.get('keywords', [])):
@@ -207,7 +224,7 @@ class CarrierOrchestrationEngine:
         return None
 
     def _create_error_response(self, message: str) -> Dict[str, Any]:
-        """Creates a standardized error dictionary."""
+        """Create standardized error response."""
         return {'type': 'error', 'message': message}
 
 
