@@ -4,10 +4,11 @@ Carrier client
 Author: Karen Florykian
 """
 import json
+import re
 import logging
 import os
 import requests
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 import shutil
 
 from pydantic import BaseModel, Field, model_validator
@@ -148,7 +149,7 @@ class CarrierClient(BaseModel):
 
     def get_available_locations(self) -> Dict[str, Any]:
         """Gets available test locations."""
-        endpoint = self.endpoints.build_endpoint('get_available_locations')
+        endpoint = self.endpoints.build_endpoint('list_locations')
         return self._json_request('get', endpoint)
 
     def get_engagements_list(self) -> List[Dict[str, Any]]:
@@ -169,7 +170,14 @@ class CarrierClient(BaseModel):
                 response_text=response.text
             ) from json_err
 
-    # In your existing CarrierClient class
+    def list_artifacts(self, bucket_name: str) -> Dict[str, Any]:
+        """Gets a list of all artifacts (files) in a given bucket."""
+        endpoint = self.endpoints.build_endpoint('list_artifacts', bucket_name=bucket_name)
+        response = self._json_request('GET', endpoint)
+        if 'rows' not in response:
+            logger.error(f"Invalid response format from artifact list endpoint for bucket '{bucket_name}'.")
+            raise CarrierAPIError(f"Invalid bucket response format for bucket '{bucket_name}'")
+        return response
 
     def get_report_info(self, report_id: str) -> Dict[str, Any]:
         """
@@ -178,15 +186,12 @@ class CarrierClient(BaseModel):
         logger.info(f"🔍 Getting report info for ID: {report_id}")
 
         try:
-            # Build endpoint for reports list
             endpoint = self.endpoints.build_endpoint('list_reports')
             logger.debug(f"   Built endpoint: {endpoint}")
 
-            # Add query parameter for specific report
             params = {'report_id': report_id}
             logger.debug(f"   Query params: {params}")
 
-            # ✅ FIX: Use existing _json_request method instead of _request
             response_data = self._json_request('GET', endpoint, params=params)
             logger.debug(f"   Response type: {type(response_data)}")
             logger.debug(
@@ -378,8 +383,6 @@ class CarrierClient(BaseModel):
         # Use _request as the response might not always be JSON.
         return self._request('post', endpoint, json=data)
 
-    # ADD TO CarrierClient class in paste.txt
-
     def download_and_unzip_reports(self, file_name: str, bucket: str, extract_to: str = "/tmp") -> str:
         """Downloads and extracts report archives."""
         import zipfile
@@ -482,7 +485,7 @@ class CarrierClient(BaseModel):
 
     def get_report_file_log(self, bucket: str, file_name: str) -> str:
         """Downloads a specific report file from bucket."""
-        endpoint = self.endpoints.build_endpoint('download_artifact_default',
+        endpoint = self.endpoints.build_endpoint('download_artifact',
                                                  bucket_name=bucket, file_name=file_name)
 
         # Add S3 config parameters
@@ -588,7 +591,131 @@ class CarrierClient(BaseModel):
 
         return self._json_request('put', endpoint, json=cancel_body)
 
-    def get_locations(self) -> Dict[str, Any]:
-        """Gets list of available locations/cloud settings."""
-        endpoint = self.endpoints.build_endpoint('list_locations')
-        return self._json_request('get', endpoint)
+    def get_ui_report_links(self, report_uid: str) -> List[str]:
+        """
+        Fetches the list of HTML report artifact links for a given UI test UID.
+        This method uses the EndpointManager to construct the correct URL,
+        parses the response, cleans file names, and constructs the final artifact links.
+        """
+        logger.info(f"Fetching UI report artifact links for report UID: {report_uid}")
+
+        try:
+            # Build the endpoint to list artifacts for the given UI report UID.
+            # This endpoint is defined in _EndpointManager.
+            list_endpoint = self.endpoints.build_endpoint('list_artifacts_ui', uid=report_uid)
+            logger.debug(f"API endpoint for listing UI report artifacts: {list_endpoint}")
+
+            response_data = self._json_request('GET', list_endpoint)
+            print("data")
+            print(response_data)
+
+            # --- Enhanced Debugging and Response Handling ---
+            if isinstance(response_data, list):
+                logger.debug(f"Received {len(response_data)} items from artifact listing.")
+                if response_data:
+                    # Log the structure of the first item for debugging
+                    first_item = response_data[0]
+                    logger.debug(f"Structure of first item: {first_item}")
+                    if 'file_name' in first_item:  # Check for 'file_name' as per legacy logic
+                        logger.debug(f"Value of 'file_name' in first item: {first_item.get('file_name')}")
+                    else:
+                        logger.debug("Key 'file_name' not found in the first item.")
+                else:
+                    logger.debug("Artifact listing returned an empty list.")
+            elif isinstance(response_data, dict):
+                logger.debug(f"Received dictionary response from artifact listing. Keys: {list(response_data.keys())}")
+                # The legacy wrapper handled dict responses by flattening values.
+                # We'll adapt to that if the endpoint structure requires it.
+                all_file_names_from_dict = []
+                for key, value in response_data.items():
+                    if isinstance(value, list):
+                        all_file_names_from_dict.extend(
+                            [item.get('file_name') for item in value if isinstance(item, dict) and 'file_name' in item])
+                if all_file_names_from_dict:
+                    logger.debug(f"Extracted {len(all_file_names_from_dict)} file_names from dictionary values.")
+                    # Treat these as the primary list of file names for processing.
+                    response_data = all_file_names_from_dict
+                else:
+                    logger.debug("No file_names found within dictionary values.")
+            else:
+                logger.error(f"Expected a list or dict response, but received type: {type(response_data)}")
+                logger.error(f"Received data: {response_data}")
+                raise CarrierAPIError(f"Invalid response format from artifact listing for UID {report_uid}")
+            # --- End Enhanced Debugging ---
+
+            file_names_set = set()
+
+            # Helper function to clean file names, similar to legacy logic
+            def clean_file_name(name: str) -> Optional[str]:
+                if not isinstance(name, str):
+                    return None
+                # Regex to capture the part before '#index=' if it exists, ensuring it ends with .html
+                # This is crucial for getting the base file name.
+                match = re.match(r"(.+?\.html)", name)
+                return match.group(1) if match else None
+
+            # Process the response_data, which could be a list or a flattened list from a dict
+            if isinstance(response_data, list):
+                for item in response_data:
+                    if isinstance(item, dict):
+                        file_name = item.get("file_name")  # Use 'file_name' as seen in sample data
+                        cleaned_name = clean_file_name(file_name)
+                        if cleaned_name:
+                            file_names_set.add(cleaned_name)
+                            logger.debug(f"Found and cleaned file name: {cleaned_name}")
+                    else:
+                        logger.warning(f"Skipping unexpected item type in file_names list: {type(item)}")
+            else:
+                # This case should ideally be caught by the earlier type check, but as a fallback:
+                logger.error(f"Unexpected data structure after initial processing: {type(response_data)}")
+
+            if not file_names_set:
+                logger.warning(f"No valid .html artifact file names found for report UID '{report_uid}'.")
+                return []
+
+            # Sort the unique file names
+            sorted_names = sorted(list(file_names_set))
+            base_artifact_url_prefix = f"{self.credentials.url.rstrip('/')}/api/v1/artifacts/artifact/default/{self.credentials.project_id}/reports/"
+            report_links = [f"{base_artifact_url_prefix}{name}" for name in sorted_names]
+
+            logger.info(f"Successfully found {len(report_links)} unique HTML report links for UID {report_uid}.")
+            return report_links
+
+        except json.JSONDecodeError as json_err:
+            # Log the problematic response text if JSON decoding fails
+            logger.error(f"Failed to decode JSON from UI report details response for UID {report_uid}")
+            raise CarrierAPIError("Server returned a non-JSON response for UI report details") from json_err
+        except CarrierAPIError as api_err:
+            logger.error(f"Carrier API error while fetching UI report links for {report_uid}: {api_err}")
+            raise
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while fetching UI report links for {report_uid}: {e}")
+            raise CarrierAPIError(f"Unexpected error fetching UI report links for {report_uid}") from e
+
+    def download_raw_from_url(self, url: str) -> str:
+        """Downloads raw content from a provided URL."""
+        logger.info(f"Downloading raw content from URL: {url}")
+        try:
+            # Ensure the URL is valid before making the request.
+            if not url or not url.startswith('http'):
+                logger.error(f"Invalid URL provided for download: {url}")
+                raise CarrierAPIError(f"Invalid URL provided for download: {url}")
+            response = self.session.get(url, timeout=30)  # Added timeout for robustness
+            response.raise_for_status()
+
+            logger.info(f"Successfully downloaded raw content from {url}.")
+            return response.text
+
+        except requests.HTTPError as http_err:
+            logger.error(f"HTTP Error downloading raw content from {url}: {http_err}")
+            raise CarrierAPIError(
+                f"API request failed for raw download",
+                status_code=http_err.response.status_code,
+                response_text=http_err.response.text
+            ) from http_err
+        except requests.RequestException as req_err:
+            logger.error(f"Network error downloading raw content from {url}: {req_err}")
+            raise CarrierAPIError(f"Network error occurred during raw download: {req_err}") from req_err
+        except Exception as e:
+            logger.exception(f"Unexpected error downloading raw content from {url}.")
+            raise CarrierAPIError(f"Unexpected error downloading raw content from {url}") from e

@@ -4,16 +4,16 @@ import logging
 from typing import Dict, Any
 from datetime import datetime
 
-from .etl_pipeline import BaseLoader
+from ..etl_pipeline import BaseLoader
 from ..reporting.core.data_models import PerformanceReport
-from ..reporting.excel_reporter import ExcelReporter
+from ..reporting.backend_excel_reporter import ExcelReporter
 from langchain_core.tools import ToolException
-from ..utils.utils import CarrierArtifactUploader
+from alita_sdk.tools.carrier.utils.utils import CarrierArtifactUploader
 
 
 class CarrierExcelLoader(BaseLoader):
     """
-    🎯 Production-ready Excel loader that generates reports and provides download links.
+    🎯 Excel loader that generates reports and provides download links.
     Uses existing API wrapper methods following DRY principles.
     """
 

@@ -1,5 +1,5 @@
 """
-ETL Component Factory
+ETL Component Factory - Enhanced Version
 
 This module provides a factory for creating properly configured ETL components.
 Following the Factory pattern, it centralizes the creation and configuration
@@ -76,51 +76,63 @@ Insights and Analytics Pipelines:
 - secret_rotation: Secret rotation reports
 """
 from .etl_pipeline import ETLPipeline
-from .extractors import CarrierArtifactExtractor
-from .loaders import CarrierExcelLoader
+from .extractors import CarrierArtifactExtractor, CarrierUIReportExtractor
+from .loaders.backend_loaders import CarrierExcelLoader
+from .loaders.ui_loaders import CarrierUIExcelLoader
 from . import transformers
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ETLComponentFactory:
-    """Assembles and returns a configured ETL pipeline based on the task type."""
+    """
+    Assembles and returns a configured ETL pipeline based on a registered key.
+    This dynamic factory uses a registration pattern for easy extension.
+    """
+    _pipelines = {}
+
+    @classmethod
+    def _register_pipelines(cls):
+        """Internal method to define all available pipelines. Cleanly separated."""
+        if cls._pipelines:
+            return
+
+        # Backend Performance Pipelines
+        excel_transformer = transformers.CarrierExcelTransformer()
+        excel_pipeline = ETLPipeline(
+            extractor=CarrierArtifactExtractor(),
+            transformer=excel_transformer,
+            loader=CarrierExcelLoader()
+        )
+        cls._pipelines["gatling_to_excel"] = excel_pipeline
+        cls._pipelines["jmeter_to_excel"] = excel_pipeline
+
+        # UI Performance Pipelines - UPDATED to use UI loader
+        ui_transformer = transformers.CarrierUIExcelTransformer()
+        ui_excel_pipeline = ETLPipeline(
+            extractor=CarrierUIReportExtractor(),
+            transformer=ui_transformer,
+            loader=CarrierUIExcelLoader()
+        )
+        cls._pipelines["lighthouse_to_excel"] = ui_excel_pipeline
+        cls._pipelines["sitespeed_to_excel"] = ui_excel_pipeline
+
+        logger.info(f"ETL Factory initialized with {len(cls._pipelines)} pipelines: {list(cls._pipelines.keys())}")
 
     @staticmethod
-    def get_pipeline(pipeline_type: str) -> ETLPipeline | None:
+    def get_pipeline(pipeline_type: str) -> ETLPipeline:
         """
         Returns a pre-configured ETLPipeline for a given type.
-        This is the central point for extending the toolkit with new capabilities.
+        Raises a ValueError if the pipeline type is not registered.
         """
+        ETLComponentFactory._register_pipelines()  # Ensure definitions are loaded
 
-        if pipeline_type == "excel_report":
-            # Example for your existing CreateExcelReportTool
-            extractor = CarrierArtifactExtractor()
-            transformer = transformers.CarrierExcelTransformer()
-            loader = CarrierExcelLoader()
-            return ETLPipeline(extractor, transformer, loader)
+        pipeline = ETLComponentFactory._pipelines.get(pipeline_type)
+        if not pipeline:
+            logger.error(f"Unknown pipeline type requested: '{pipeline_type}'")
+            raise ValueError(
+                f"Unknown pipeline type: '{pipeline_type}'. Available types: {list(ETLComponentFactory._pipelines.keys())}")
 
-        elif pipeline_type == "ui_to_excel":
-            # Example for your existing CreateExcelReportTool
-            extractor = CarrierArtifactExtractor()
-            transformer = transformers.CarrierExcelTransformer()
-            loader = CarrierExcelLoader()
-            return ETLPipeline(extractor, transformer, loader)
-
-        elif pipeline_type == "pptx_update":
-            # Example for the new PPT functionality
-            # extractor = PPTXExtractor() # Extracts template structure and transcript
-            # transformer = PPTContentTransformer() # Uses ETLLLMIntegrator to generate content
-            # loader = CarrierPPTXLoader() # Uploads the new PPTX
-            # return ETLPipeline(extractor, transformer, loader)
-            pass  # Placeholder
-
-        elif pipeline_type == "excel_comparison_update":
-            # Example for the CompareExcelReportsTool
-            # extractor = MasterComparisonExtractor() # Extracts BOTH master and new result sheets
-            # transformer = ComparisonSheetTransformer() # Adds new sheet to master workbook
-            # loader = CarrierExcelLoader() # Uploads the updated master workbook
-            # return ETLPipeline(extractor, transformer, loader)
-            pass  # Placeholder
-
-
-        else:
-            raise ValueError(f"Unknown pipeline type: '{pipeline_type}'. Cannot build ETL pipeline.")
+        logger.info(f"Returning configured pipeline for '{pipeline_type}'")
+        return pipeline

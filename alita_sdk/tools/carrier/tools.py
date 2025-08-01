@@ -11,7 +11,7 @@ from .utils.intent_utils import CarrierIntentExtractor
 # 1. IMPORT ALL ATOMIC TOOL CLASSES
 # ====================================================================================
 from .tickets_tool import FetchTicketsTool, CreateTicketTool
-from .backend_reports_tool import GetReportsTool, GetReportByIDTool, ProcessAndGenerateReportTool
+from .backend_reports_tool import GetReportsTool, GetReportByIDTool, CreateBackendReportTool
 from .backend_tests_tool import GetBackendTestsTool, GetTestByIDTool, RunTestByIDTool, CreateBackendTestTool
 from .ui_reports_tool import GetUIReportsTool, GetUIReportByIDTool, GetUITestsTool
 from .run_ui_test_tool import RunUITestTool
@@ -242,7 +242,7 @@ class CarrierIntentMetaTool(BaseTool):
 
     name: str = "carrier_performance_analytics"
     description: str = (
-        "Use this for any tasks related to performance testing, analysis, or reporting. "
+        "Use this for any tasks related to performance testing, analysis, creating tickets in Carrier or reporting. "
         "Provide the user's request exactly as it is. For example: 'show me the latest reports', "
         "'run test 123', or 'get tests'."
     )
@@ -284,7 +284,7 @@ ACTION_TOOL_MAP: Dict[str, Type[BaseTool]] = {
     # Backend Analysis
     "get_reports": GetReportsTool,
     "get_report_by_id": GetReportByIDTool,
-    "process_report": ProcessAndGenerateReportTool,
+    "create_backend_excel_report": CreateBackendReportTool,
 
     # Backend Test Management
     "get_backend_tests": GetBackendTestsTool,

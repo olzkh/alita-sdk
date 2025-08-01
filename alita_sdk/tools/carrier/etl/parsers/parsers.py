@@ -1,20 +1,21 @@
 import io
 import logging
+import json
 import pandas as pd
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, List
 import numpy as np
 
-from ..utils.utils import GATLING_CONFIG
+from alita_sdk.tools.carrier.utils.utils import GATLING_CONFIG
 from ..reporting.core.data_models import (
     TransactionMetrics,
     ReportSummary,
     PerformanceReport,
     create_transaction_metrics_from_stats,
     create_empty_transaction_metrics,
-    validate_performance_report
+    validate_performance_report, PerformanceStatus, UIPerformanceReport, UIMetrics
 )
 
 logger = logging.getLogger(__name__)
@@ -352,16 +353,141 @@ class JMeterReportParser(BaseReportParser):
             raise
 
 
-# =================================================================================
-# 3. REFACTORED PLACEHOLDER PARSERS
-# =================================================================================
-
 class LighthouseJsonParser(BaseReportParser):
-    """Placeholder parser conforming to the unified contract."""
+    """
+    Parses a Lighthouse JSON report into a standardized UIPerformanceReport data model.
 
-    def parse(self) -> PerformanceReport:
-        self.logger.warning("LighthouseJsonParser is not yet implemented.")
-        raise NotImplementedError("Lighthouse JSON parsing not yet supported")
+    This parser adapts the hierarchical, key-value structure of a Lighthouse report
+    to the transactional structure of the UIPerformanceReport model. Each key audit
+    (e.g., FCP, LCP) from a single Lighthouse run is treated as a separate "transaction"
+    to ensure compatibility with downstream reporting components.
+    """
+
+    def parse(self) -> UIPerformanceReport:
+        """
+        Transforms the raw Lighthouse JSON stream into a validated UIPerformanceReport object.
+        This is the sole entry point used by the ETL Transformer.
+        """
+        self.logger.info("Starting Lighthouse JSON parsing to create UIPerformanceReport object.")
+        try:
+            self.stream.seek(0)
+            data = json.load(self.stream)
+
+            # Extract metrics, which will be used for the 'worksheets_data' field
+            ui_metrics_list = self._extract_ui_metrics(data)
+
+            # Create the summary object directly as UIPerformanceReport
+            summary_report = self._create_summary(data, ui_metrics_list)
+
+            self.logger.info("Successfully created and validated UIPerformanceReport from Lighthouse JSON.")
+            return summary_report
+
+        except Exception as e:
+            self.logger.error(f"Critical error during Lighthouse JSON parsing: {e}", exc_info=True)
+            raise
+
+    def _extract_ui_metrics(self, data: dict) -> List[UIMetrics]:
+        """
+        Extracts metrics from Lighthouse JSON and formats them into a List[UIMetrics].
+        Each key audit metric will become a UIMetrics object.
+        """
+        ui_metrics_list = []
+        steps = data.get('steps', [])
+        if not steps:
+            steps = [{'lhr': data, 'name': 'Page Load'}]
+
+        for step in steps:
+            step_name = step.get('name', 'Unnamed Step')
+            lhr_data = step.get('lhr', {})
+            audits = lhr_data.get('audits', {})
+
+            audit_map = {
+                'first-contentful-paint': 'First Contentful Paint (FCP)',
+                'largest-contentful-paint': 'Largest Contentful Paint (LCP)',
+                'cumulative-layout-shift': 'Cumulative Layout Shift (CLS)',
+                'total-blocking-time': 'Total Blocking Time (TBT)',
+                'speed-index': 'Speed Index',
+                'interactive': 'Time to Interactive (TTI)'
+            }
+
+            for audit_id, display_name in audit_map.items():
+                audit_data = audits.get(audit_id, {})
+                value = audit_data.get('numericValue')
+
+                ui_metric = UIMetrics(
+                    step_name=step_name,
+                    performance_score=(audit_data.get('score', 0.0) * 100) if audit_data.get(
+                        'score') is not None else None,
+                    audit=display_name,
+                    numeric_value=value if value is not None else 0.0
+                )
+                ui_metrics_list.append(ui_metric)
+
+        if not ui_metrics_list:
+            self.logger.warning("No UI metrics extracted from Lighthouse data.")
+
+        return ui_metrics_list
+
+    def _create_summary(self, data: dict, ui_metrics_list: List[UIMetrics]) -> UIPerformanceReport:
+        """Creates a UIPerformanceReport object from the overall Lighthouse data."""
+        self.logger.info("Creating UIPerformanceReport object.")
+
+        lhr_data = data.get('steps', [{}])[-1].get('lhr', data)
+
+        performance_score_raw = lhr_data.get('categories', {}).get('performance', {}).get('score')
+        performance_score = (performance_score_raw * 100) if performance_score_raw is not None else 0.0
+
+        fetch_time_str = data.get('fetchTime')
+        if fetch_time_str:
+            try:
+                fetch_time = datetime.fromisoformat(fetch_time_str.replace('Z', '+00:00'))
+            except ValueError:
+                self.logger.warning(f"Could not parse fetchTime: {fetch_time_str}. Using current time.")
+                fetch_time = datetime.utcnow()
+        else:
+            self.logger.warning("fetchTime not found in Lighthouse data. Using current time.")
+            fetch_time = datetime.utcnow()
+
+        lcp_duration = 0
+        for metric in ui_metrics_list:
+            if "LCP" in metric.audit and hasattr(metric, 'numeric_value') and metric.numeric_value is not None:
+                lcp_duration = metric.numeric_value
+                break
+
+        if lcp_duration == 0:
+            self.logger.warning("LCP metric not found or is zero. Using 0 for duration.")
+
+        report_id = data.get('reportId', 'unknown_report_id')
+        report_name = data.get('reportName', 'Unknown Report Name')
+
+        test_status = "Passed" if performance_score >= 90 else "Failed"
+        build_status = PerformanceStatus.PASSED if performance_score >= 90 else PerformanceStatus.FAILED
+
+        user_agent = lhr_data.get('userAgent', 'Unknown')
+        browser_name = user_agent.split('/')[0] if '/' in user_agent else 'Unknown'
+
+        try:
+            report = UIPerformanceReport(
+                report_id=report_id,
+                report_name=report_name,
+                test_status=test_status,
+                start_time=fetch_time.isoformat(),
+                end_time=fetch_time.isoformat(),
+                browser=browser_name,
+                worksheets_data=ui_metrics_list,
+                report_type="Lighthouse",
+                carrier_report_url=data.get('finalDisplayedUrl'),
+                build_status=build_status
+            )
+            self.logger.info(f"Successfully created UIPerformanceReport for report ID: {report.report_id}")
+            return report
+        except ValueError as ve:
+            self.logger.error(f"ValueError during UIPerformanceReport creation: {ve}. "
+                              f"Data used: report_id={report_id}, report_name={report_name}, worksheets_data={len(ui_metrics_list)}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error creating UIPerformanceReport: {e}", exc_info=True)
+            raise
 
 
 class PptxTextExtractor(BaseReportParser):

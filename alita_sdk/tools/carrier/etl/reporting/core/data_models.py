@@ -242,6 +242,41 @@ class ReportSummary:
             return "PASSED"
 
 
+class UIMetrics:
+    """Data model for UI performance metrics."""
+
+    def __init__(self, step_name: str, performance_score: float, audit: str, numeric_value: float):
+        self.step_name = step_name
+        self.performance_score = performance_score
+        self.audit = audit
+        self.numeric_value = numeric_value
+
+
+@dataclass(frozen=True)
+class UIPerformanceReport:
+    """
+    Immutable summary for a UI performance test, following the backend report pattern.
+    """
+    report_id: str
+    report_name: str
+    test_status: str
+    start_time: str
+    end_time: str
+    browser: str
+    worksheets_data: List[UIMetrics]
+    report_type: str
+    carrier_report_url: Optional[str] = None
+    build_status: PerformanceStatus = PerformanceStatus.WARNING
+
+    def __post_init__(self):
+        if not self.report_id:
+            raise ValueError("report_id cannot be empty")
+        if not self.report_name:
+            raise ValueError("report_name cannot be empty")
+        if not self.worksheets_data:
+            raise ValueError("worksheets_data cannot be empty")
+
+
 @dataclass
 class PerformanceReport:
     """

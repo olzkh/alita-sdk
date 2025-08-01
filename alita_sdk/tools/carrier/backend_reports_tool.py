@@ -1,13 +1,13 @@
 import json
-import logging
-from typing import Type, List, Dict, Any, Optional, Union
+import os
+from typing import Type, List, Dict, Any, Optional
 from datetime import datetime
+import logging
 
-from pydantic import Field, create_model, BaseModel
+from langchain_core.tools import BaseTool, ToolException
+from pydantic import Field, BaseModel
 from .api_wrapper import CarrierAPIWrapper
 
-import logging
-from langchain_core.tools import BaseTool, ToolException
 from .etl.etl_factory import ETLComponentFactory
 
 logger = logging.getLogger(__name__)
@@ -504,7 +504,7 @@ class CreateBackendTestTool(BaseCarrierTool):
             self.handle_api_error(operation, e)
 
 
-class ProcessAndGenerateReportTool(BaseTool):
+class CreateBackendReportTool(BaseTool):
     """🚀 Generate Excel reports using ETL pipeline and factory pattern."""
 
     name: str = "process_and_generate_report"
@@ -526,9 +526,13 @@ class ProcessAndGenerateReportTool(BaseTool):
         """
         try:
             logger.info(f"🚀 Processing report {report_id} using ETL factory")
-
-            # Step 1: Get pipeline from factory (DRY principle)
-            pipeline = ETLComponentFactory.get_pipeline("excel_report")
+            report = self._api_wrapper.get_report_metadata(report_id)
+            if report['lg_type'] == 'jmeter':
+                pipeline = ETLComponentFactory.get_pipeline("jmeter_to_excel")
+            elif report['lg_type'] == 'gatling':
+                pipeline = ETLComponentFactory.get_pipeline("gatling_to_excel")
+            else:
+                raise Exception
             logger.info("✅ ETL pipeline obtained from factory")
 
             # Step 2: Prepare context with default parameters
@@ -542,7 +546,6 @@ class ProcessAndGenerateReportTool(BaseTool):
                 "er_threshold": 5
             }
 
-            # Step 3: Run pipeline (one line!)
             result = pipeline.run(context)
             logger.info(f"🔍 Loader result type: {type(result)}")
             logger.info(f"🔍 Loader result content: {result}")
@@ -573,6 +576,7 @@ class ProcessAndGenerateReportTool(BaseTool):
                     f"🔗 Download: {download}")
         else:
             return f"❌ Processing failed: {result.get('error', 'Unknown error')}"
+
 
 class GetReportsTool(BaseCarrierTool):
     """📋 Retrieves and filters performance reports with advanced sorting."""
@@ -690,6 +694,8 @@ class GetReportsTool(BaseCarrierTool):
         return value
 
 
+# Snippet to REPLACE the entire GetReportByIDTool class
+
 class GetReportByIDTool(BaseCarrierTool):
     """🔍 Retrieves detailed report information with error analysis."""
 
@@ -709,16 +715,19 @@ class GetReportByIDTool(BaseCarrierTool):
         )
 
         try:
-            # Get report details using API wrapper method
-            report, test_log_path, error_log_path = self.api_wrapper.get_report_file_name(report_id)
+            # Step 1: Use the new, clean wrapper method to process artifacts.
+            # This call handles the download/unzip/merge logic and returns the final paths.
+            artifact_data = self.api_wrapper.process_report_artifacts(report_id)
+            report_metadata = artifact_data["metadata"]
+            error_log_path = artifact_data["error_log_path"]
 
-            # Process errors if requested
+            # Step 2: Process errors if requested, using the path from the artifact data.
             error_analysis = {"errors_included": False, "error_count": 0}
             if include_errors:
-                error_analysis = self._analyze_errors(error_log_path, error_limit, report)
+                error_analysis = self._analyze_errors(error_log_path, error_limit)
 
-            # Enhance with recommendations
-            enhanced_report = self._enhance_with_recommendations(report, error_analysis)
+            # Step 3: Enhance the metadata with recommendations.
+            enhanced_report = self._enhance_with_recommendations(report_metadata, error_analysis)
 
             duration = (datetime.now() - start_time).total_seconds()
             self.log_operation_success(operation, duration)
@@ -735,8 +744,15 @@ class GetReportByIDTool(BaseCarrierTool):
         except Exception as e:
             self.handle_api_error(operation, e)
 
-    def _analyze_errors(self, error_log_path: str, limit: int, report: Dict) -> Dict:
+    def _analyze_errors(self, error_log_path: str, limit: int) -> Dict:
         """Analyze error logs with conditional processing."""
+        # This method no longer needs the 'report' dict passed to it.
+        if not error_log_path or not os.path.exists(error_log_path):
+            return {
+                "errors_included": False,
+                "message": "📂 No error log file found or created. The test likely completed without errors."
+            }
+
         try:
             with open(error_log_path, 'r', encoding='utf-8') as f:
                 error_lines = [line.strip() for line in f.readlines()[:limit] if line.strip()]
@@ -748,13 +764,8 @@ class GetReportByIDTool(BaseCarrierTool):
                 "error_analysis": self._categorize_errors(error_lines),
                 "recommendations": self._get_error_recommendations(error_lines)
             }
-        except FileNotFoundError:
-            return {
-                "errors_included": False,
-                "message": "📂 No error log file found - test likely completed without errors"
-            }
         except Exception as e:
-            logger.warning(f"⚠️ Error processing log: {e}")
+            logger.warning(f"⚠️ Error processing log file {error_log_path}: {e}")
             return {
                 "errors_included": False,
                 "error": f"Failed to process error logs: {str(e)}"
@@ -802,28 +813,17 @@ class GetReportByIDTool(BaseCarrierTool):
         """Enhance report with processing recommendations."""
         enhanced = dict(report)  # Copy original report
 
-        # Add status analysis with explicit logging and error handling
         status_raw = report.get("test_status", "unknown")
         if isinstance(status_raw, dict):
-            logger.error(f"💥 test_status is a dict, expected str. Value: {status_raw}")
             status = str(status_raw.get("status", "unknown")).lower()
         else:
-            try:
-                status = str(status_raw).lower()
-            except Exception as e:
-                logger.error(f"💥 Failed to convert test_status to lower: {status_raw} ({e})")
-                status = "unknown"
+            status = str(status_raw).lower()
 
         lg_type_raw = report.get("lg_type", "")
         if isinstance(lg_type_raw, dict):
-            logger.error(f"💥 lg_type is a dict, expected str. Value: {lg_type_raw}")
             lg_type = str(lg_type_raw.get("type", "")).lower()
         else:
-            try:
-                lg_type = str(lg_type_raw).lower()
-            except Exception as e:
-                logger.error(f"💥 Failed to convert lg_type to lower: {lg_type_raw} ({e})")
-                lg_type = ""
+            lg_type = str(lg_type_raw).lower()
 
         enhanced["processing_recommendations"] = {
             "status_assessment": self._assess_status(status),
@@ -848,8 +848,6 @@ class GetReportByIDTool(BaseCarrierTool):
     def _calculate_readiness_score(self, status: str, error_analysis: Dict) -> int:
         """Calculate readiness score from 0-100."""
         score = 0
-
-        # Base score from status
         if status == "finished":
             score += 60
         elif status == "stopped":
@@ -857,7 +855,6 @@ class GetReportByIDTool(BaseCarrierTool):
         elif status == "failed":
             score += 20
 
-        # Adjust for errors
         error_count = error_analysis.get("error_count", 0)
         if error_count == 0:
             score += 40
@@ -867,7 +864,6 @@ class GetReportByIDTool(BaseCarrierTool):
             score += 20
         else:
             score += 10
-
         return min(score, 100)
 
     def _generate_next_steps(self, status: str, lg_type: str, error_analysis: Dict) -> List[Dict]:
@@ -876,495 +872,34 @@ class GetReportByIDTool(BaseCarrierTool):
         readiness_score = self._calculate_readiness_score(status, error_analysis)
         error_count = error_analysis.get("error_count", 0)
 
-        # High priority actions for ready reports
         if status == "finished" and error_count < 10 and readiness_score >= 80:
-            steps.append({
-                "action": "🚀 Generate Excel Report",
-                "tool": "process_and_generate_report",
-                "priority": "high",
-                "description": "Ready for immediate processing - optimal conditions detected",
-                "estimated_time": "2-5 minutes",
-                "confidence": "high"
-            })
-
-        # Medium priority for analysis and review
+            steps.append(
+                {"action": "🚀 Generate Excel Report", "tool": "process_and_generate_report", "priority": "high",
+                 "description": "Ready for immediate processing - optimal conditions detected"})
         if error_count > 0:
             severity = "critical" if error_count > 100 else "moderate" if error_count > 20 else "minor"
-            steps.append({
-                "action": f"🔍 Review {severity.title()} Error Patterns",
-                "priority": "medium" if severity != "critical" else "high",
-                "description": f"Analyze {error_count} errors for performance insights",
-                "estimated_time": "5-15 minutes",
-                "error_severity": severity
-            })
-
-        # Tool-specific processing recommendations
+            steps.append({"action": f"🔍 Review {severity.title()} Error Patterns",
+                          "priority": "medium" if severity != "critical" else "high",
+                          "description": f"Analyze {error_count} errors for performance insights"})
         if lg_type in ["gatling", "jmeter"]:
             pipeline_type = f"{lg_type}_to_excel"
-            steps.append({
-                "action": f"⚙️ Process with {lg_type.title()} Pipeline",
-                "tool": "process_and_generate_report",
-                "priority": "medium" if readiness_score >= 60 else "low",
-                "description": f"Use {pipeline_type} for optimized report generation",
-                "pipeline_type": pipeline_type,
-                "estimated_time": "3-8 minutes"
-            })
-
-        # Status-specific recommendations
+            steps.append(
+                {"action": f"⚙️ Process with {lg_type.title()} Pipeline", "tool": "process_and_generate_report",
+                 "priority": "medium" if readiness_score >= 60 else "low",
+                 "description": f"Use {pipeline_type} for optimized report generation"})
         if status == "failed":
-            steps.append({
-                "action": "🔧 Investigate Test Failure",
-                "priority": "high",
-                "description": "Review test configuration and system availability before retry",
-                "estimated_time": "10-30 minutes",
-                "requires_manual_review": True
-            })
+            steps.append({"action": "🔧 Investigate Test Failure", "priority": "high",
+                          "description": "Review test configuration and system availability before retry"})
         elif status == "running":
-            steps.append({
-                "action": "⏳ Monitor Test Progress",
-                "priority": "low",
-                "description": "Wait for completion before processing",
-                "estimated_time": "varies",
-                "check_interval": "5 minutes"
-            })
+            steps.append({"action": "⏳ Monitor Test Progress", "priority": "low",
+                          "description": "Wait for completion before processing"})
         elif status == "stopped":
-            steps.append({
-                "action": "📊 Partial Data Analysis",
-                "priority": "medium",
-                "description": "Extract insights from incomplete test data",
-                "estimated_time": "5-10 minutes",
-                "data_completeness": "partial"
-            })
-
-        # Advanced recommendations based on error patterns
-        if error_analysis.get("errors_included"):
-            error_categories = error_analysis.get("error_analysis", {})
-            if error_categories.get("timeout_errors", 0) > 5:
-                steps.append({
-                    "action": "⏱️ Timeout Analysis Deep Dive",
-                    "priority": "medium",
-                    "description": "Investigate timeout patterns for capacity planning",
-                    "focus_area": "timeout_analysis"
-                })
-
-            if error_categories.get("http_errors", 0) > 10:
-                steps.append({
-                    "action": "🌐 HTTP Error Pattern Analysis",
-                    "priority": "high",
-                    "description": "Analyze HTTP error distribution for system health",
-                    "focus_area": "http_error_analysis"
-                })
-
-        # Default fallback if no specific actions identified
+            steps.append({"action": "📊 Partial Data Analysis", "priority": "medium",
+                          "description": "Extract insights from incomplete test data"})
         if not steps:
-            steps.append({
-                "action": "🔍 Manual Review Required",
-                "priority": "medium",
-                "description": "Report status requires manual assessment",
-                "estimated_time": "5-15 minutes",
-                "requires_manual_review": True
-            })
+            steps.append({"action": "🔍 Manual Review Required", "priority": "medium",
+                          "description": "Report status requires manual assessment"})
 
-        # Sort by priority (high -> medium -> low)
         priority_order = {"high": 3, "medium": 2, "low": 1}
         steps.sort(key=lambda x: priority_order.get(x["priority"], 0), reverse=True)
-
         return steps
-
-    # =========================================================================
-    #  ADVANCED REPORT PROCESSING AND ANALYTICS TOOLS
-    # =========================================================================
-
-    class ProcessAndGenerateAdvancedReportTool(BaseCarrierTool):
-        """📊 Advanced report processing with multi-format support and analytics."""
-
-        name: str = "process_advanced_report"
-        description: str = "📊 Advanced report processing with custom analytics and multiple output formats"
-        args_schema: Type[BaseModel] = ProcessReportInput
-
-        def _run(self, report_id: str, pipeline_type: str = "gatling_to_excel",
-                 output_format: str = "excel", analytics_level: str = "standard", **kwargs) -> str:
-            operation = f"advanced processing report {report_id}"
-            start_time = datetime.now()
-
-            self.log_operation_start(
-                operation,
-                report_id=report_id,
-                pipeline_type=pipeline_type,
-                output_format=output_format,
-                analytics_level=analytics_level,
-                **kwargs
-            )
-
-            try:
-                # Enhanced report validation with caching
-                report_data = self._validate_and_cache_report(report_id)
-
-                # Get appropriate pipeline with fallback
-                pipeline = ETLComponentFactory.get_pipeline(pipeline_type)
-                if not pipeline:
-                    # Smart pipeline detection based on report metadata
-                    detected_pipeline = self._detect_optimal_pipeline(report_data)
-                    pipeline = ETLComponentFactory.get_pipeline(detected_pipeline)
-                    logger.info(f"🔍 Auto-detected pipeline: {detected_pipeline}")
-
-                if not pipeline:
-                    raise ToolException(f"🔧 No suitable pipeline found for report {report_id}")
-
-                # Enhanced execution context with analytics config
-                context = self._build_enhanced_context(
-                    report_data, report_id, analytics_level, output_format, kwargs
-                )
-
-                # Execute with progress tracking
-                result = self._execute_with_progress_tracking(pipeline, context)
-
-                duration = (datetime.now() - start_time).total_seconds()
-
-                if result.get("status") == "Success":
-                    self.log_operation_success(operation, duration, **result)
-                    return self._format_success_response(result, report_id, pipeline_type, duration, kwargs)
-                else:
-                    raise ToolException(f"⚠️ Pipeline execution failed: {result.get('message', 'Unknown error')}")
-
-            except Exception as e:
-                self.handle_api_error(operation, e)
-
-        def _validate_and_cache_report(self, report_id: str) -> Dict:
-            """Validate report with intelligent caching."""
-            try:
-                report_data = self.api_wrapper.get_report_by_id(report_id)
-                if not report_data:
-                    raise ToolException(f"🔍 Report '{report_id}' not found")
-
-                # Cache validation result for performance
-                logger.info(f"✅ Report {report_id} validated and cached")
-                return report_data
-            except Exception as e:
-                logger.error(f"💥 Report validation failed for {report_id}: {e}")
-                raise ToolException(f"❌ Unable to validate report {report_id}: {str(e)}")
-
-        def _detect_optimal_pipeline(self, report_data: Dict) -> str:
-            """Intelligent pipeline detection based on report characteristics."""
-            lg_type = report_data.get("lg_type", "").lower()
-
-            pipeline_mapping = {
-                "gatling": "gatling_to_excel",
-                "jmeter": "jmeter_to_excel",
-                "k6": "k6_to_excel",
-                "locust": "locust_to_excel"
-            }
-
-            detected = pipeline_mapping.get(lg_type, "generic_to_excel")
-            logger.info(f"🎯 Detected optimal pipeline: {detected} for lg_type: {lg_type}")
-            return detected
-
-        def _build_enhanced_context(self, report_data: Dict, report_id: str,
-                                    analytics_level: str, output_format: str, kwargs: Dict) -> Dict:
-            """Build enhanced execution context with analytics configuration."""
-            context = {
-                "api_wrapper": self.api_wrapper,
-                "source_report_id": report_id,
-                "report_metadata": report_data,
-                "user_args": kwargs,
-                "analytics_config": {
-                    "level": analytics_level,
-                    "output_format": output_format,
-                    "enable_trends": analytics_level in ["advanced", "expert"],
-                    "include_recommendations": True,
-                    "generate_summary": True
-                },
-                "processing_options": {
-                    "parallel_processing": kwargs.get("parallel_processing", True),
-                    "memory_optimization": kwargs.get("memory_optimization", True),
-                    "detailed_logging": kwargs.get("detailed_logging", False)
-                }
-            }
-
-            # Add conditional features based on analytics level
-            if analytics_level == "expert":
-                context["analytics_config"].update({
-                    "statistical_analysis": True,
-                    "anomaly_detection": True,
-                    "capacity_modeling": True
-                })
-
-            return context
-
-        def _execute_with_progress_tracking(self, pipeline, context: Dict) -> Dict:
-            """Execute pipeline with enhanced progress tracking and error recovery."""
-            try:
-                logger.info("🔄 Starting pipeline execution with progress tracking")
-
-                # Add progress callback
-                context["progress_callback"] = self._log_progress
-
-                # Execute with timeout and retry logic
-                result = pipeline.run(context)
-
-                logger.info("✅ Pipeline execution completed successfully")
-                return result
-
-            except Exception as e:
-                logger.error(f"💥 Pipeline execution failed: {str(e)}")
-                # Attempt recovery or provide fallback
-                return self._attempt_recovery(pipeline, context, e)
-
-        def _log_progress(self, stage: str, progress: float, details: str = ""):
-            """Progress logging callback for pipeline execution."""
-            logger.info(f"📊 Pipeline Progress: {stage} - {progress:.1%} {details}")
-
-        def _attempt_recovery(self, pipeline, context: Dict, error: Exception) -> Dict:
-            """Attempt to recover from pipeline failures with fallback strategies."""
-            logger.warning(f"🔧 Attempting recovery from error: {str(error)}")
-
-            # Try simplified processing
-            context["analytics_config"]["level"] = "basic"
-            context["processing_options"]["parallel_processing"] = False
-
-            try:
-                logger.info("🔄 Retrying with simplified configuration")
-                result = pipeline.run(context)
-                logger.warning("⚠️ Recovery successful with reduced functionality")
-                return result
-            except Exception as recovery_error:
-                logger.error(f"💥 Recovery failed: {str(recovery_error)}")
-                return {
-                    "status": "Failed",
-                    "message": f"Pipeline failed and recovery unsuccessful: {str(error)}",
-                    "recovery_attempted": True
-                }
-
-        def _format_success_response(self, result: Dict, report_id: str,
-                                     pipeline_type: str, duration: float, kwargs: Dict) -> str:
-            """Format comprehensive success response with enhanced details."""
-            return json.dumps({
-                "message": "🎉 Advanced report processing completed successfully",
-                "execution_summary": {
-                    "report_id": report_id,
-                    "pipeline_used": pipeline_type,
-                    "processing_time_seconds": round(duration, 2),
-                    "analytics_level": kwargs.get("analytics_level", "standard"),
-                    "output_format": kwargs.get("output_format", "excel")
-                },
-                "output_details": {
-                    "download_url": result.get('report_url'),
-                    "file_size_mb": result.get('file_size_mb', 'unknown'),
-                    "sheets_generated": result.get('sheets_count', 'unknown'),
-                    "records_processed": result.get('records_processed', 'unknown')
-                },
-                "analysis_configuration": {
-                    "percentile": kwargs.get('pct', '95Pct'),
-                    "thresholds": {
-                        "throughput_req_per_sec": kwargs.get('tp_threshold', 10),
-                        "response_time_ms": kwargs.get('rt_threshold', 500),
-                        "error_rate_percent": kwargs.get('er_threshold', 5)
-                    }
-                },
-                "performance_insights": result.get('insights', {}),
-                "recommendations": result.get('recommendations', []),
-                "processing_metadata": {
-                    "timestamp": datetime.now().isoformat(),
-                    "version": "2.0",
-                    "pipeline_version": result.get('pipeline_version', 'latest')
-                }
-            }, indent=2)
-
-    class BulkReportProcessingTool(BaseCarrierTool):
-        """🔄 Bulk processing tool for multiple reports with batch optimization."""
-
-        name: str = "bulk_process_reports"
-        description: str = "🔄 Process multiple reports in batch with optimization"
-        args_schema: Type[BaseModel] = create_model(
-            "BulkProcessingInput",
-            report_ids=(List[str], Field(..., description="List of report IDs to process")),
-            pipeline_type=(str, Field(default="auto", description="Pipeline type or 'auto' for detection")),
-            batch_size=(int, Field(default=5, ge=1, le=20, description="Batch processing size")),
-            parallel_processing=(bool, Field(default=True, description="Enable parallel processing")),
-            __base__=BaseToolInput
-        )
-
-        def _run(self, report_ids: List[str], pipeline_type: str = "auto",
-                 batch_size: int = 5, parallel_processing: bool = True) -> str:
-            operation = f"bulk processing {len(report_ids)} reports"
-            start_time = datetime.now()
-
-            self.log_operation_start(
-                operation,
-                report_count=len(report_ids),
-                batch_size=batch_size,
-                parallel_processing=parallel_processing
-            )
-
-            try:
-                # Validate all reports first
-                validated_reports = self._validate_reports_batch(report_ids)
-
-                # Process in batches
-                results = self._process_reports_in_batches(
-                    validated_reports, pipeline_type, batch_size, parallel_processing
-                )
-
-                duration = (datetime.now() - start_time).total_seconds()
-
-                # Compile results summary
-                summary = self._compile_batch_summary(results, duration)
-
-                self.log_operation_success(
-                    operation,
-                    duration,
-                    successful=summary["successful_count"],
-                    failed=summary["failed_count"]
-                )
-
-                return json.dumps(summary, indent=2)
-
-            except Exception as e:
-                self.handle_api_error(operation, e)
-
-        def _validate_reports_batch(self, report_ids: List[str]) -> List[Dict]:
-            """Validate multiple reports with efficient batch processing."""
-            validated_reports = []
-            validation_errors = []
-
-            for report_id in report_ids:
-                try:
-                    report_data = self.api_wrapper.get_report_by_id(report_id)
-                    if report_data:
-                        validated_reports.append({
-                            "report_id": report_id,
-                            "metadata": report_data,
-                            "status": "valid"
-                        })
-                    else:
-                        validation_errors.append(f"Report {report_id} not found")
-                except Exception as e:
-                    validation_errors.append(f"Report {report_id}: {str(e)}")
-
-            if validation_errors:
-                logger.warning(f"⚠️ Validation issues: {validation_errors}")
-
-            logger.info(f"✅ Validated {len(validated_reports)}/{len(report_ids)} reports")
-            return validated_reports
-
-        def _process_reports_in_batches(self, validated_reports: List[Dict],
-                                        pipeline_type: str, batch_size: int,
-                                        parallel_processing: bool) -> List[Dict]:
-            """Process reports in optimized batches."""
-            results = []
-            total_batches = (len(validated_reports) + batch_size - 1) // batch_size
-
-            for batch_num in range(total_batches):
-                start_idx = batch_num * batch_size
-                end_idx = min(start_idx + batch_size, len(validated_reports))
-                batch = validated_reports[start_idx:end_idx]
-
-                logger.info(f"📦 Processing batch {batch_num + 1}/{total_batches} ({len(batch)} reports)")
-
-                batch_results = self._process_single_batch(batch, pipeline_type, parallel_processing)
-                results.extend(batch_results)
-
-                # Small delay between batches to prevent overwhelming the system
-                if batch_num < total_batches - 1:
-                    logger.info("⏳ Brief pause between batches")
-
-            return results
-
-        def _process_single_batch(self, batch: List[Dict], pipeline_type: str,
-                                  parallel_processing: bool) -> List[Dict]:
-            """Process a single batch of reports."""
-            batch_results = []
-
-            for report_info in batch:
-                try:
-                    report_id = report_info["report_id"]
-                    metadata = report_info["metadata"]
-
-                    # Determine optimal pipeline if auto-detection is enabled
-                    if pipeline_type == "auto":
-                        detected_pipeline = self._detect_optimal_pipeline(metadata)
-                    else:
-                        detected_pipeline = pipeline_type
-
-                    # Get pipeline
-                    pipeline = ETLComponentFactory.get_pipeline(detected_pipeline)
-                    if not pipeline:
-                        raise Exception(f"Pipeline {detected_pipeline} not available")
-
-                    # Process report
-                    context = {
-                        "api_wrapper": self.api_wrapper,
-                        "source_report_id": report_id,
-                        "report_metadata": metadata,
-                        "batch_processing": True
-                    }
-
-                    result = pipeline.run(context)
-
-                    batch_results.append({
-                        "report_id": report_id,
-                        "status": "success",
-                        "pipeline_used": detected_pipeline,
-                        "output_url": result.get('report_url'),
-                        "processing_time": result.get('processing_time', 'unknown')
-                    })
-
-                except Exception as e:
-                    logger.error(f"💥 Failed to process report {report_id}: {str(e)}")
-                    batch_results.append({
-                        "report_id": report_id,
-                        "status": "failed",
-                        "error": str(e),
-                        "pipeline_attempted": pipeline_type
-                    })
-
-            return batch_results
-
-        def _compile_batch_summary(self, results: List[Dict], duration: float) -> Dict:
-            """Compile comprehensive batch processing summary."""
-            successful = [r for r in results if r["status"] == "success"]
-            failed = [r for r in results if r["status"] == "failed"]
-
-            return {
-                "message": f"🔄 Bulk processing completed",
-                "execution_summary": {
-                    "total_reports": len(results),
-                    "successful_count": len(successful),
-                    "failed_count": len(failed),
-                    "success_rate": f"{(len(successful) / len(results) * 100):.1f}%",
-                    "total_processing_time_seconds": round(duration, 2),
-                    "average_time_per_report": round(duration / len(results), 2)
-                },
-                "successful_reports": successful,
-                "failed_reports": failed,
-                "recommendations": self._generate_bulk_recommendations(results),
-                "processing_timestamp": datetime.now().isoformat()
-            }
-
-        def _generate_bulk_recommendations(self, results: List[Dict]) -> List[str]:
-            """Generate recommendations based on bulk processing results."""
-            recommendations = []
-            failed_count = len([r for r in results if r["status"] == "failed"])
-
-            if failed_count > 0:
-                failure_rate = failed_count / len(results)
-                if failure_rate > 0.2:  # More than 20% failures
-                    recommendations.append(
-                        "🔍 High failure rate detected - investigate system capacity and report quality")
-                else:
-                    recommendations.append("⚠️ Some reports failed - review individual error messages")
-
-            pipeline_usage = {}
-            for result in results:
-                if result["status"] == "success":
-                    pipeline = result.get("pipeline_used", "unknown")
-                    pipeline_usage[pipeline] = pipeline_usage.get(pipeline, 0) + 1
-
-            if len(pipeline_usage) > 1:
-                most_used = max(pipeline_usage.items(), key=lambda x: x[1])
-                recommendations.append(f"📊 Consider standardizing on {most_used[0]} pipeline for consistency")
-
-            if not recommendations:
-                recommendations.append("✅ Bulk processing completed successfully - all reports processed efficiently")
-
-            return recommendations

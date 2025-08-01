@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator, SecretStr
 
 from .sdk.client import CarrierClient, CarrierCredentials, CarrierAPIError
-from .reporting.core.data_models import TicketPayload
+from .etl.reporting.core.data_models import TicketPayload
 from .sdk.data_models import ReportRequest, ReportType
 
 logger = logging.getLogger(__name__)
@@ -83,20 +83,25 @@ class CarrierAPIWrapper(BaseModel):
     def get_engagements_list(self) -> List[Dict[str, Any]]:
         return self._api_call('get_engagements_list')
 
-    def get_report_file_name(self, report_id: str, extract_to: str = "/tmp") -> str:
-        return self._api_call('get_report_file_name', report_id, extract_to)
-
     def get_report_file_log(self, bucket: str, file_name: str) -> str:
         return self._api_call('get_report_file_log', bucket, file_name)
 
     def upload_file(self, bucket_name: str, file_name: str) -> bool:
         return self._api_call('upload_file', bucket_name, file_name)
 
+    def get_ui_report_links(self, report_uid: str) -> List[str]:
+        """Gets the list of artifact links for a specific UI report UID."""
+        return self._api_call('get_ui_report_links', report_uid)
+
+    def download_raw_from_url(self, url: str) -> str:
+        """Downloads raw content from a provided URL."""
+        return self._api_call('download_raw_from_url', url)
+
     def get_ui_reports_list(self) -> List[Dict[str, Any]]:
         return self._api_call('get_ui_reports_list')
 
     def get_ui_tests_list(self) -> List[Dict[str, Any]]:
-        return self._api_call('get_ui_tests_list')
+        return self._api_call('list_ui_tests')
 
     def get_locations(self) -> Dict[str, Any]:
         return self._api_call('get_locations')
@@ -125,6 +130,47 @@ class CarrierAPIWrapper(BaseModel):
                         f"but you requested {request.report_type.value}. Please confirm your intent.")
             return f"❌ Report ID '{request.report_id}' not found. Please verify the ID."
         return f"✅ Report ID '{request.report_id}' verified as {request.report_type.value} report. Proceeding..."
+
+    def list_artifacts(self, bucket_name: str) -> Dict[str, Any]:
+        """Lists all artifacts (files) within a specified storage bucket."""
+        return self._api_call('list_artifacts', bucket_name)
+
+    def get_report_metadata(self, report_id: str) -> Dict[str, Any]:
+        """
+        Provides a clean, direct interface for fetching a single report's metadata.
+        This delegates to the get_report_info method on the client.
+        """
+        logger.info(f"Wrapper: Fetching metadata for report_id: {report_id}")
+        return self._api_call('get_report_info', report_id)
+
+    def process_report_artifacts(self, report_id: str, extract_to: str = "/tmp") -> Dict[str, Any]:
+        """
+        Orchestrates the downloading, unzipping, and merging of report artifacts.
+        This method calls the complex logic in the client but exposes it as a single,
+        clear action.
+        Returns a dictionary with the report metadata and local paths to the processed logs.
+        """
+        logger.info(f"Wrapper: Processing artifacts for report_id: {report_id}")
+        try:
+            report_info, test_log_path, errors_log_path = self._api_call(
+                'get_report_file_name', report_id, extract_to
+            )
+
+            return {
+                "metadata": report_info,
+                "test_log_path": test_log_path,
+                "error_log_path": errors_log_path
+            }
+        except Exception as e:
+            logger.error(f"Wrapper: Failed to process artifacts for report {report_id}: {e}", exc_info=True)
+            raise
+
+    def download_artifact(self, bucket_name: str, file_name: str, extract_to: str) -> str:
+        """
+        Downloads a single artifact to a specified local directory.
+        Returns the full path to the downloaded file.
+        """
+        return self._api_call('download_artifact_to_file', bucket_name, file_name, extract_to)
 
     @staticmethod
     def _clean_html_name(file_name: str) -> str:

@@ -33,7 +33,7 @@ AVAILABLE TOOLS AND ACTIONS:
 📊 BACKEND ANALYSIS:
 - get_reports: List backend performance reports (JMeter, Gatling results)
 - get_report_by_id: Get detailed report information by ID
-- process_report: Generate Excel reports from test data
+- create_backend_excel_report: Generate Excel reports from test data
 
 🧪 BACKEND TEST MANAGEMENT:
 - get_backend_tests: List all backend performance tests
@@ -66,10 +66,10 @@ USER REQUEST: "{user_message}"
 {tool_guidance}
 
 SEMANTIC DISAMBIGUATION RULES:
-Analyze the user's intent semantically. If the request is genuinely ambiguous (could mean multiple different actions), set is_ambiguous=true and provide clarification options.
-
+!!! Critically evaluate the request to determine what tool to use! if interpretation in multiple valid ways can affect tool selection - ask questions to confirm (is it backend related of UI related?).
+Analyze the user's intent semantically. If the request is genuinely ambiguous (could mean multiple different actions or different tools), set is_ambiguous=true and provide clarification options.
 ONLY mark as ambiguous if:
-1. The request uses generic terms like "get tests" without context indicating backend vs UI
+1. The request uses generic terms like "get tests", "generate report for x" without context indicating backend vs UI
 2. The request uses "reports" without clear indication of backend vs UI reports
 3. Multiple valid interpretations truly exist
 
@@ -195,9 +195,8 @@ def _get_tool_parameter_guidance_from_schema(tool_schema: Any) -> str:
     return "\n".join(guidance_lines)
 
 
-# VALIDATION MAPPINGS - Streamlined and complete
 VALID_ACTION_MAPPINGS = {
-    'backend_analysis': ['get_reports', 'get_report_by_id', 'process_report'],
+    'backend_analysis': ['get_reports', 'get_report_by_id', 'create_backend_excel_report'],
     'test_management': ['get_backend_tests', 'get_test_by_id', 'create_backend_test'],
     'test_execution': ['run_test'],
     'ui_analysis': ['get_ui_reports', 'get_ui_report_by_id', 'create_ui_excel_report'],
@@ -250,6 +249,11 @@ def build_parameter_extraction_examples() -> List[Dict[str, Any]]:
             "user_message": "start test 456 with 2 min ramp up and 25 concurrent users",
             "expected_parameters": {"test_id": "456", "ramp_up": "120", "users": "25"},
             "description": "Test with ramp up and user count"
+        },
+        {
+            "user_message": "run ui test 789 for 1 hour",
+            "expected_parameters": {"test_id": "789", "duration": "3600"},
+            "description": "UI test with hour-based duration"
         },
         {
             "user_message": "get report 999",

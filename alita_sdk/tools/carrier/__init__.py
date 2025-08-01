@@ -82,43 +82,40 @@ class AlitaCarrierToolkit(BaseToolkit):
 
         logger.info("[AlitaCarrierToolkit] Initializing v3.0.0 with conversational orchestration engine.")
 
-        try:
-            # 1. Initialize the shared API wrapper.
-            carrier_api_wrapper = CarrierAPIWrapper(
-                url=url,
-                organization=organization,
-                private_token=private_token,
-                project_id=project_id,
-                **kwargs
-            )
 
-            # 2. Instantiate the powerful OrchestrationEngine.
-            # This is the "brain" that handles the actual work.
-            orchestration_engine = CarrierOrchestrationEngine(
-                llm=llm,
-                api_wrapper=carrier_api_wrapper,
-                tool_class_map=ACTION_TOOL_MAP
-            )
+        # 1. Initialize the shared API wrapper.
+        carrier_api_wrapper = CarrierAPIWrapper(
+            url=url,
+            organization=organization,
+            private_token=private_token,
+            project_id=project_id,
+            **kwargs
+        )
 
-            # 3. Create the meta-tool adapter and pass the engine to it.
-            # This is the single tool the LangChain agent will see.
-            meta_tool = CarrierIntentMetaTool(
-                orchestration_engine=orchestration_engine
-            )
+        # 2. Instantiate the powerful OrchestrationEngine.
+        # This is the "brain" that handles the actual work.
+        orchestration_engine = CarrierOrchestrationEngine(
+            llm=llm,
+            api_wrapper=carrier_api_wrapper,
+            tool_class_map=ACTION_TOOL_MAP
+        )
 
-            # The toolkit contains only the single meta-tool adapter.
-            tools = [meta_tool]
+        # 3. Create the meta-tool adapter and pass the engine to it.
+        # This is the single tool the LangChain agent will see.
+        meta_tool = CarrierIntentMetaTool(
+            orchestration_engine=orchestration_engine
+        )
 
-            logger.info(
-                f"[AlitaCarrierToolkit] Toolkit ready. {len(ACTION_TOOL_MAP)} actions are available "
-                f"through the intelligent orchestration engine."
-            )
+        # The toolkit contains only the single meta-tool adapter.
+        tools = [meta_tool]
 
-            return cls(tools=tools)
+        logger.info(
+            f"[AlitaCarrierToolkit] Toolkit ready. {len(ACTION_TOOL_MAP)} actions are available "
+            f"through the intelligent orchestration engine."
+        )
 
-        except Exception as e:
-            logger.exception("[AlitaCarrierToolkit] Critical initialization error.")
-            raise ValueError(f"Toolkit initialization failed: {str(e)}")
+        return cls(tools=tools)
+
 
     def get_tools(self) -> List[BaseTool]:
         """

@@ -45,7 +45,6 @@ class GatlingConfig:
 @dataclass(frozen=True)
 class ExcelStyleTheme:
     """A centralized, immutable theme for Excel report styling."""
-    # ... (This class is already well-designed and needs no changes) ...
     _HEX_GREEN_FILL: str = 'AFF2C9'
     _HEX_YELLOW_FILL: str = 'F7F7A9'
     _HEX_RED_FILL: str = 'F7A9A9'
@@ -68,12 +67,26 @@ class ExcelStyleTheme:
     FILL_SUMMARY_HEADER: PatternFill = field(
         default_factory=lambda: PatternFill(start_color=ExcelStyleTheme._HEX_TEAL_SUMMARY, fill_type='solid'))
 
+    # UI-specific fills using the same color scheme
+    FILL_UI_HEADER: PatternFill = field(
+        default_factory=lambda: PatternFill(start_color=ExcelStyleTheme._HEX_TEAL_HEADER, fill_type='solid'))
+    FILL_UI_GOOD: PatternFill = field(
+        default_factory=lambda: PatternFill(start_color=ExcelStyleTheme._HEX_GREEN_FILL, fill_type='solid'))
+    FILL_UI_WARNING: PatternFill = field(
+        default_factory=lambda: PatternFill(start_color=ExcelStyleTheme._HEX_YELLOW_FILL, fill_type='solid'))
+    FILL_UI_POOR: PatternFill = field(
+        default_factory=lambda: PatternFill(start_color=ExcelStyleTheme._HEX_RED_FILL, fill_type='solid'))
+
     FONT_HEADER: Font = field(default_factory=lambda: Font(bold=True, color=ExcelStyleTheme._HEX_WHITE_FONT))
     FONT_SUMMARY_LABEL: Font = field(default_factory=lambda: Font(bold=True, color=ExcelStyleTheme._HEX_BLUE_FONT))
     FONT_STATUS_PASSED: Font = field(default_factory=lambda: Font(bold=True, color=ExcelStyleTheme._HEX_GREEN_FONT))
     FONT_STATUS_FAILED: Font = field(default_factory=lambda: Font(bold=True, color=ExcelStyleTheme._HEX_RED_FONT))
     FONT_HYPERLINK: Font = field(
         default_factory=lambda: Font(bold=True, underline="single", color=ExcelStyleTheme._HEX_BLUE_FONT))
+
+    # UI-specific fonts
+    FONT_UI_BOLD: Font = field(default_factory=lambda: Font(bold=True, size=16))
+    FONT_UI_HEADER: Font = field(default_factory=lambda: Font(bold=True))
 
     BORDER_DEFAULT_THIN: Border = field(
         default_factory=lambda: Border(left=Side(style="thin", color=ExcelStyleTheme._HEX_GRAY_BORDER),
@@ -216,7 +229,7 @@ class CarrierArtifactUploader:
 
     def __init__(self, api_wrapper: Any):
         if not api_wrapper:
-            raise ValueError("CarrierArtifactUploader requires a valid api_wrapper.")
+            raise ToolException("CarrierArtifactUploader requires a valid api_wrapper")
         self.api = api_wrapper
         self.logger = logging.getLogger(__name__)
 
@@ -232,7 +245,17 @@ class CarrierArtifactUploader:
 
         Returns:
             True if the upload was successful, False otherwise.
+
+        Raises:
+            ToolException: If upload fails for any reason.
         """
+        if not file_bytes:
+            raise ToolException("File bytes cannot be empty")
+        if not bucket_name:
+            raise ToolException("Bucket name is required")
+        if not remote_filename:
+            raise ToolException("Remote filename is required")
+
         temp_zip_path = f"/tmp/{os.path.splitext(remote_filename)[0]}.zip"
         self.logger.info(
             f"Preparing to upload '{remote_filename}' by creating a temporary zip archive at '{temp_zip_path}'.")
@@ -244,7 +267,7 @@ class CarrierArtifactUploader:
             zipf.writestr(remote_filename, file_bytes)
         zip_bytes = zip_buffer.getvalue()
 
-        # Step 2: Write the zip archive bytes to a temporary file (reusing legacy API constraint)
+        # Step 2: Write the zip archive bytes to a temporary file
         with open(temp_zip_path, 'wb') as temp_file:
             temp_file.write(zip_bytes)
 
@@ -253,12 +276,11 @@ class CarrierArtifactUploader:
         # Step 3: Upload the temporary zip file using the provided API wrapper method
         success = self.api.upload_file(bucket_name, temp_zip_path)
 
-        if success:
-            self.logger.info(f"Successfully uploaded '{temp_zip_path}' to bucket '{bucket_name}'.")
-        else:
-            self.logger.error(f"API call to upload '{temp_zip_path}' to bucket '{bucket_name}' failed.")
+        if not success:
+            raise ToolException(f"Failed to upload '{temp_zip_path}' to bucket '{bucket_name}'")
 
-        return success
+        self.logger.info(f"Successfully uploaded '{temp_zip_path}' to bucket '{bucket_name}'.")
+        return True
 
 
 from langchain_core.pydantic_v1 import BaseModel as LangchainBaseModel

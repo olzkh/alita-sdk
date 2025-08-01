@@ -1,5 +1,5 @@
 """
-Performance Analyst helper - Refactored for maintainability and reliability
+Performance Analyst helper for maintainability and reliability
 
 Author: Karen Florykian
 """

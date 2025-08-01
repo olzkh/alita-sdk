@@ -10,7 +10,7 @@ from .data_models import (
     PerformanceStatus, PerformanceDirection, ThresholdConfig, PerformanceReport
 )
 from .threshold_manager import ThresholdManager
-from alita_sdk.tools.carrier.reporting.formatting.formatting import TextFormatter
+from alita_sdk.tools.carrier.etl.reporting.formatting.formatting import TextFormatter
 from alita_sdk.tools.carrier.utils.utils import AnalysisRulesConfig
 
 logger = logging.getLogger(__name__)
