@@ -101,7 +101,7 @@ class CarrierAPIWrapper(BaseModel):
         return self._api_call('get_ui_reports_list')
 
     def get_ui_tests_list(self) -> List[Dict[str, Any]]:
-        return self._api_call('list_ui_tests')
+        return self._api_call('get_ui_tests_list')
 
     def get_locations(self) -> Dict[str, Any]:
         return self._api_call('get_locations')

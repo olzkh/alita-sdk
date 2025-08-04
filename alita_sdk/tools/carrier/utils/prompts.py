@@ -115,6 +115,15 @@ Return a JSON object with this exact structure:
 }}
 
 EXAMPLES:
+"create new test with the same params as UI_11 but name is Karen_UI_11" ->
+{{
+    "task_type": "ui_test_management",
+    "action": "create_ui_test",
+    "tool_parameters": {{"test_name": "Karen_UI_11", "source_test_name": "UI_11"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
 
 "run backend test 215 with duration 30 sec" →
 {{
