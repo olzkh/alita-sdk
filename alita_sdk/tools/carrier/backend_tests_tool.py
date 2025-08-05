@@ -164,6 +164,7 @@ class RunTestByIDTool(BaseTool):
             api_test_parameters = [{"name": k, "default": str(v)} for k, v in final_params.items()]
 
             # 5. Build the 'common_params' dictionary for the API request body
+            loc_ = kwargs.get("location", test_data.get("location", "default"))
             common_params = {
                 "name": test_data.get("name"),
                 "entrypoint": test_data.get("entrypoint"),
@@ -172,7 +173,7 @@ class RunTestByIDTool(BaseTool):
                 "test_type": final_params.get("test_type", test_data.get("test_type")),
                 "env_type": final_params.get("env_type", test_data.get("env_type")),
                 "parallel_runners": test_data.get("parallel_runners"),
-                "location": kwargs.get("location", test_data.get("location", "default")),
+                "location": loc_,
                 "env_vars": test_data.get("env_vars", {}),
             }
             if "cloud_settings" in kwargs and kwargs["cloud_settings"] is not None:
@@ -187,7 +188,20 @@ class RunTestByIDTool(BaseTool):
 
             # 7. Execute the test via the API wrapper
             report_id = self.api_wrapper.run_test(test_id, json_body)
-            return f"✅ Test {test_id} started successfully with specified parameters. Report ID: {report_id}"
+            # Build the correct report URL
+            base_url = self.api_wrapper.url.rstrip('/')
+            report_url = f"{base_url}/-/performance/backend/results?result_id={report_id}"
+            return json.dumps({
+                "message": "✅ Test execution started successfully",
+                "report_id": report_id,
+                "report_url": report_url,
+                "test_name": test_data.get("name"),
+                "execution_details": {
+                    "location": loc_,
+                    "parameters_applied": json_body,
+                    "estimated_duration": test_data.get("estimated_duration", "unknown")
+                }
+            }, indent=2)
 
         except Exception as e:
             logger.exception(f"Critical failure in RunTestByIDTool for test {test_id}")

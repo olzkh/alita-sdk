@@ -3,16 +3,20 @@ import io
 import os
 import tempfile
 import zipfile
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+from langchain_core.tools import ToolException
 
 from ..etl_pipeline import BaseTransformer
-from alita_sdk.tools.carrier.api_wrapper  import CarrierAPIWrapper
+from alita_sdk.tools.carrier.api_wrapper import CarrierAPIWrapper
+from ..extractors import CarrierArtifactExtractor
 from ..reporting.core.analyzers import PerformanceAnalyzer
 from ..reporting.core.threshold_manager import ThresholdManager
 from ..parsers import parsers
 from alita_sdk.tools.carrier.utils.utils import get_latest_log_file
 from alita_sdk.tools.carrier.utils.utils import GatlingConfig
 from ..reporting.core.data_models import PerformanceReport
+from ..reporting.core.data_models import PerformanceAnalysisResult
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +127,7 @@ class CarrierExcelTransformer(BaseTransformer):
         report_metadata = extracted_data["report_metadata"]
         user_args = context.get("user_args", {})
 
-        parser = self._get_parser_for(report_metadata.get("lg_type"), user_args)
+        parser = self._get_parser_for(report_metadata.get("lg_type"), log_stream, user_args)
         report = parser.parse()
 
         logger.info(f"Successfully received PerformanceReport object from '{parser.__class__.__name__}'.")
@@ -174,3 +178,118 @@ class CarrierExcelTransformer(BaseTransformer):
             logger.info(f"Successfully set carrier_report_url for report ID {report_id}")
         else:
             logger.warning("Could not set carrier_report_url: api_wrapper or report_id missing from context.")
+
+
+class ComparisonExcelTransformer(BaseTransformer):
+    """
+    Transforms a list of reports into a single comparison workbook.
+    It orchestrates the processing of each individual report before generating
+    the final comparison data and AI-powered analysis.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.single_report_transformer = CarrierExcelTransformer()
+        logger.info("ComparisonExcelTransformer initialized")
+
+    def transform(self, extracted_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Prepares comparison data for the stateful loader. It processes individual reports
+        and generates AI analysis, but does NOT create an Excel workbook.
+        """
+        logger.info("Preparing comparison data for the stateful loader...")
+        reports_meta = extracted_data["reports_meta"]
+
+        performance_reports = self._process_individual_reports(reports_meta, context)
+
+        if len(performance_reports) < 2:
+            raise ToolException(f"Could only process {len(performance_reports)} reports successfully. Need at least 2.")
+
+        comparison_analysis = None
+        if context.get("enable_ai_analysis"):
+            try:
+                logger.info("Attempting AI-powered comparison analysis...")
+                comparison_analysis = self._perform_llm_analysis(performance_reports, context)
+                if comparison_analysis:
+                    logger.info("Successfully generated AI comparison analysis.")
+            except Exception as e:
+                logger.warning(f"AI analysis step failed but proceeding. Error: {e}", exc_info=True)
+
+        return {
+            "all_reports": performance_reports,
+            "comparison_analysis": comparison_analysis
+        }
+
+    def _process_individual_reports(self, reports_meta: List[Dict], global_context: Dict) -> List[PerformanceReport]:
+        """
+        Processes a list of report metadata into a list of PerformanceReport objects.
+        """
+        processed_reports = []
+        test_name = global_context.get("test_name", "Unknown Test")
+
+        for report_meta in reports_meta:
+            try:
+                report_id = report_meta["id"]
+                logger.info(f"Processing individual report ID: {report_id}")
+
+                single_report_context = global_context.copy()
+                single_report_context["report_id"] = report_id
+
+                extractor = CarrierArtifactExtractor()
+                extracted_data = extractor.extract(single_report_context)
+
+                performance_report = self.single_report_transformer.transform(extracted_data, single_report_context)
+                performance_report.test_name = test_name
+
+                processed_reports.append(performance_report)
+
+            except Exception as e:
+                logger.error(f"Failed to process report ID {report_meta.get('id', 'N/A')}: {e}", exc_info=True)
+                # Continue to the next report if one fails
+                continue
+
+        return processed_reports
+
+    def _determine_report_type(self, report: PerformanceReport) -> str:
+        return getattr(report, 'report_type', 'GATLING').upper()
+
+    def _perform_llm_analysis(self, reports: List[PerformanceReport], context: Dict) -> Optional[
+        PerformanceAnalysisResult]:
+        """
+        Perform LLM analysis by calling the new, direct structured data extraction method.
+        """
+        llm = context.get("llm")
+        if not llm:
+            logger.warning("LLM not available in context - skipping analysis")
+            return None
+
+        try:
+            from alita_sdk.tools.carrier.utils.intent_utils import CarrierIntentExtractor
+            from alita_sdk.tools.carrier.etl.reporting.core.data_models import PerformanceAnalysisResult
+            from alita_sdk.tools.carrier.utils.prompts import build_enhanced_comparison_prompt
+
+            # --- THE FINAL FIX IS HERE ---
+            # 1. Prepare the data for the prompt builder.
+            reports_data_for_prompt = [
+                {"description": f"Report from {r.summary.date_start}", "content": r.summary.to_legacy_dict()}
+                for r in reports
+            ]
+
+            # 2. Call the centralized prompt builder.
+            analysis_request = build_enhanced_comparison_prompt(reports_data_for_prompt, context)
+
+            # 3. Use the new, direct data extraction method.
+            intent_extractor = CarrierIntentExtractor(llm=llm)
+            logger.info("Extracting performance comparison analysis using direct structured data method.")
+
+            analysis_result = intent_extractor.extract_structured_data(
+                user_message=analysis_request,
+                tool_schema=PerformanceAnalysisResult,
+                context={"task": "internal_structured_analysis"}
+            )
+
+            return analysis_result
+
+        except Exception as e:
+            logger.error(f"Error during LLM analysis: {e}", exc_info=True)
+            return None

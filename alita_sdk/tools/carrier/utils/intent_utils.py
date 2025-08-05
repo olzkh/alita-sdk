@@ -94,12 +94,18 @@ class CarrierIntentExtractor:
             raise RuntimeError(f"LLM initialization failed: {e}")
 
     def extract_intent_with_parameters(self, user_message: str, tool_schema: Optional[Type[BaseModel]] = None,
-                                       context: Optional[Dict] = None) -> CarrierIntent:
+                                       context: Optional[Dict] = None,
+                                       skip_action_validation: bool = False) -> CarrierIntent:
         """
         Extract intent and parameters in a single, robust LLM call.
 
-        Raises:
-            RuntimeError: If extraction fails after all retries
+        Args:
+            user_message: The input message from the user or system.
+            tool_schema: The Pydantic schema for structured data extraction.
+            context: Additional context for the prompt.
+            skip_action_validation: If True, bypasses the action-to-task mapping validation.
+
+        Raises:  RuntimeError: If extraction fails after all retries.
         """
         start_time = time.time()
         self.metrics['total_requests'] += 1
@@ -124,11 +130,9 @@ class CarrierIntentExtractor:
                 # Process and validate result
                 intent = self._process_llm_result(result, user_message)
 
-                if intent and self._validate_intent(intent):
-                    # Update metrics
+                if intent and self._validate_intent(intent, skip_action_validation=skip_action_validation):
                     response_time = time.time() - start_time
                     self._update_success_metrics(response_time, intent)
-
                     logger.info(f"[IntentExtractor] Success on attempt {attempt + 1}")
                     return intent
                 else:
@@ -179,6 +183,40 @@ class CarrierIntentExtractor:
             logger.error(f"[IntentExtractor] Unexpected result type: {type(result)}")
             return None
 
+    def extract_structured_data(self, user_message: str, tool_schema: Type[BaseModel],
+                                context: Optional[Dict] = None) -> Optional[BaseModel]:
+        """
+        Directly extracts structured data into a given Pydantic schema.
+        This is the preferred method for internal, non-routing analysis tasks.
+        """
+        logger.info(
+            f"[IntentExtractor] Performing direct structured data extraction for schema: {tool_schema.__name__}")
+        start_time = time.time()
+
+        try:
+            # Configure the LLM to directly output the target schema
+            structured_llm = self.llm.with_structured_output(schema=tool_schema)
+
+            from .prompts import build_performance_analyst_prompt
+            prompt = build_performance_analyst_prompt(user_message, context, tool_schema)
+
+            # Invoke the LLM and get the structured object directly
+            result = structured_llm.invoke(prompt)
+
+            response_time = time.time() - start_time
+            logger.info(f"Direct data extraction successful in {response_time:.2f}s.")
+
+            # The result should already be an instance of our target schema
+            if isinstance(result, tool_schema):
+                return result
+            else:
+                logger.error(f"LLM did not return the expected schema type. Got: {type(result)}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Direct structured data extraction failed: {e}", exc_info=True)
+            return None
+
     def _create_intent_from_dict(self, data: Dict) -> Optional[CarrierIntent]:
         """
         Safely create CarrierIntent from dictionary.
@@ -222,7 +260,7 @@ class CarrierIntentExtractor:
             logger.error(f"[IntentExtractor] JSON parsing failed: {e}")
             return None
 
-    def _validate_intent(self, intent: CarrierIntent) -> bool:
+    def _validate_intent(self, intent: CarrierIntent, skip_action_validation: bool = False) -> bool:
         """
         Validate intent with explicit checks.
         """
@@ -247,6 +285,14 @@ class CarrierIntentExtractor:
         if not validate_action_mapping(intent.task_type, intent.action):
             logger.warning(f"[IntentExtractor] Invalid action mapping: {intent.task_type} -> {intent.action}")
             return False
+
+        if skip_action_validation:
+            logger.debug("[IntentExtractor] Bypassing action validation for internal parsing task.")
+        else:
+            from .prompts import validate_action_mapping
+            if not validate_action_mapping(intent.task_type, intent.action):
+                logger.warning(f"[IntentExtractor] Invalid action mapping: {intent.task_type} -> {intent.action}")
+                return False
 
         # Confidence check
         if intent.confidence_score is not None and intent.confidence_score < 0.3:

@@ -11,7 +11,7 @@ from .utils.intent_utils import CarrierIntentExtractor
 # 1. IMPORT ALL ATOMIC TOOL CLASSES
 # ====================================================================================
 from .tickets_tool import FetchTicketsTool, CreateTicketTool
-from .backend_reports_tool import GetReportsTool, GetReportByIDTool, CreateBackendReportTool
+from .backend_reports_tool import GetReportsTool, GetReportByIDTool, CreateBackendExcelReportTool
 from .backend_tests_tool import GetBackendTestsTool, GetTestByIDTool, RunTestByIDTool, CreateBackendTestTool
 from .ui_reports_tool import GetUIReportsTool, GetUIReportByIDTool, GetUITestsTool
 from .run_ui_test_tool import RunUITestTool
@@ -40,7 +40,7 @@ class CarrierOrchestrationEngine:
         except Exception as e:
             logger.error(f"[OrchestrationEngine] Failed to initialize intent extractor: {e}")
             raise RuntimeError(f"Orchestrator initialization failed: {e}")
-
+        self.llm = llm
         self.api_wrapper = api_wrapper
         self.tool_class_map = tool_class_map
         self.session_context: Dict[str, Any] = {}
@@ -188,6 +188,9 @@ class CarrierOrchestrationEngine:
 
         try:
             tool_instance = tool_class(api_wrapper=self.api_wrapper)
+            if action == 'create_backend_excel_report':
+                params["llm"] = self.llm
+
             logger.info(f"[OrchestrationEngine] Invoking {tool_class.__name__} with params: {params}")
             result = tool_instance._run(**params)
             return {
@@ -284,7 +287,7 @@ ACTION_TOOL_MAP: Dict[str, Type[BaseTool]] = {
     # Backend Analysis
     "get_reports": GetReportsTool,
     "get_report_by_id": GetReportByIDTool,
-    "create_backend_excel_report": CreateBackendReportTool,
+    "create_backend_excel_report": CreateBackendExcelReportTool,
 
     # Backend Test Management
     "get_backend_tests": GetBackendTestsTool,

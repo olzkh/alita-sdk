@@ -32,7 +32,7 @@ AVAILABLE TOOLS AND ACTIONS:
 
 📊 BACKEND ANALYSIS:
 - get_reports: List backend performance reports (JMeter, Gatling results)
-- get_report_by_id: Get detailed report information by ID
+- get_report_by_id: Get detailed report information by ID (includes direct link to view report)
 - create_backend_excel_report: Generate Excel reports from test data
 
 🧪 BACKEND TEST MANAGEMENT:
@@ -159,12 +159,27 @@ EXAMPLES:
 
 "create test called Load Test with 25 users for 5 minutes" →
 {{
-    "task_type": "test_management", 
+    "task_type": "test_management",
     "action": "create_backend_test",
     "tool_parameters": {{"test_name": "Load Test", "users": "25", "duration": "300"}},
     "is_ambiguous": false,
     "confidence_score": 0.9
 }}
+
+"generate a consolidated report in Excel format for the last 5 runs of jmeterDemo_Agent test" →
+{{
+    "task_type": "backend_comparison",
+    "action": "create_comparison_report",
+    "tool_parameters": {{"test_name": "jmeterDemo_Agent", "run_count": "5", "output_format": "excel"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+IMPORTANT URL HANDLING:
+- When users ask for links to reports or test results, use the get_report_by_id tool which provides the actual platform URL
+- NEVER generate fake URLs like "carrier.example.com" 
+- The get_report_by_id tool returns a "report_url" field with the actual link
+- Always use tools to get real URLs rather than making them up
 
 Focus on SEMANTIC understanding rather than keyword matching. Extract parameters precisely as the tools expect them.
 
@@ -206,6 +221,8 @@ def _get_tool_parameter_guidance_from_schema(tool_schema: Any) -> str:
 
 VALID_ACTION_MAPPINGS = {
     'backend_analysis': ['get_reports', 'get_report_by_id', 'create_backend_excel_report'],
+    'backend_comparison': ['jmeter_comparison_between_the_tests', 'gatling_comparison_between_the_tests',
+                           'report_comparison_with_baseline', 'create_comparison_report'],
     'test_management': ['get_backend_tests', 'get_test_by_id', 'create_backend_test'],
     'test_execution': ['run_test'],
     'ui_analysis': ['get_ui_reports', 'get_ui_report_by_id', 'create_ui_excel_report'],
@@ -276,6 +293,159 @@ def build_parameter_extraction_examples() -> List[Dict[str, Any]]:
         }
     ]
 
+
+REPORT_ANALYSIS_PROMPT = """
+You are a Performance Analysis expert tasked with analyzing test reports and providing insights.
+
+Your task is to generate a structured analysis of performance test results including:
+
+Guidelines:
+- report_type: Classify the report type (baseline, comparison, ui_performance, regression)
+- key_metrics: Extract and summarize key performance indicators with specific values
+- issues_found: List any performance issues or anomalies detected with severity levels
+- recommendations: Provide actionable recommendations for improvement with priority levels
+- comparison_insights: If comparing reports, highlight differences and trends with percentages
+- trend_analysis: Analyze performance trends over time
+- regression_detection: Identify any performance regressions with root cause analysis
+- consistency_analysis: Evaluate consistency across test runs
+
+Content to analyze:
+{report_content}
+
+Baseline data (if available):
+{baseline_data}
+
+Please provide your analysis in the following JSON structure:
+{{
+    "report_type": "comparison",
+    "key_metrics": {{
+        "avg_response_time": "value in ms",
+        "error_rate": "percentage",
+        "throughput": "requests per second",
+        "virtual_users": "number of users"
+    }},
+    "issues_found": [
+        {{
+            "issue": "description",
+            "severity": "critical|high|medium|low",
+            "impact": "description of impact",
+            "transactions_affected": ["list of transactions"]
+        }}
+    ],
+    "recommendations": [
+        {{
+            "recommendation": "actionable recommendation",
+            "priority": "high|medium|low",
+            "effort": "low|medium|high",
+            "expected_impact": "description"
+        }}
+    ],
+    "comparison_insights": {{
+        "performance_change": "improved|degraded|stable",
+        "response_time_change": "percentage change",
+        "error_rate_change": "percentage change",
+        "throughput_change": "percentage change"
+    }},
+    "trend_analysis": {{
+        "response_time_trend": "improving|degrading|stable",
+        "error_rate_trend": "improving|degrading|stable", 
+        "throughput_trend": "improving|degrading|stable",
+        "trend_strength": "strong|moderate|weak"
+    }},
+    "regression_detection": [
+        {{
+            "transaction": "transaction name",
+            "regression_type": "response_time|error_rate|throughput",
+            "severity": "critical|major|minor",
+            "percentage_change": "percentage",
+            "possible_causes": ["list of possible causes"]
+        }}
+    ],
+    "consistency_analysis": {{
+        "consistency_score": "0-100",
+        "outliers_detected": ["list of outlier transactions"],
+        "variability_assessment": "high|medium|low"
+    }},
+    "actionable_next_steps": [
+        "Immediate action items for Performance Analysts"
+    ]
+}}
+"""
+
+ENHANCED_COMPARISON_PROMPT = """You are a performance testing expert analyzing {total_reports} load test reports.
+
+REPORTS DATA:
+{reports_data}
+
+REQUIRED JSON STRUCTURE:
+You MUST respond with a JSON object that exactly matches this structure:
+{{
+    "summary": "A comprehensive executive summary of the performance comparison (string)",
+    "key_findings": [
+        "First key finding as a complete sentence",
+        "Second key finding as a complete sentence",
+        "Third key finding as a complete sentence"
+    ],
+    "performance_trends": {{
+        "response_time_trend": "improving|degrading|stable",
+        "throughput_trend": "improving|degrading|stable", 
+        "error_rate_trend": "improving|degrading|stable",
+        "overall_trend": "description of overall performance trend"
+    }},
+    "recommendations": [
+        "First actionable recommendation as a complete sentence",
+        "Second actionable recommendation as a complete sentence",
+        "Third actionable recommendation as a complete sentence"
+    ],
+    "risk_assessment": {{
+        "overall_risk": "low|medium|high",
+        "risk_factors": ["factor1", "factor2"],
+        "mitigation_strategies": ["strategy1", "strategy2"]
+    }},
+    "confidence_score": 0.85
+}}
+
+CRITICAL REQUIREMENTS:
+1. The "summary" field must be a single string, not a list
+2. The "key_findings" field must be an array of strings (not objects)
+3. The "recommendations" field must be an array of strings (not objects)
+4. The "performance_trends" field must be an object with the exact keys shown
+5. The "confidence_score" must be a decimal number between 0 and 1
+6. ALL fields shown above are REQUIRED - do not omit any field
+7. Do NOT add any additional fields not shown in the structure
+8. Respond ONLY with the JSON object - no additional text before or after
+
+Analyze the performance data and provide your response as valid JSON matching the exact structure above."""
+
+def build_enhanced_comparison_prompt(reports_data: List[Dict], context: Dict) -> str:
+    """
+    Build enhanced comparison prompt for multi-report analysis using structured data.
+    Ensures the LLM returns data in the exact format expected by PerformanceAnalysisResult.
+    """
+    total_reports = len(reports_data)
+
+    # Create a more detailed, structured summary for the LLM
+    reports_summary = "\n\n".join([
+        (
+            f"Report {i + 1} ({report['description']}):\n"
+            f"  - Test Date: {report['content'].get('date_start', 'N/A')}\n"
+            f"  - Duration: {report['content'].get('duration', 'N/A')} minutes\n"
+            f"  - Max Users: {report['content'].get('max_user_count', 'N/A')}\n"
+            f"  - Throughput: {report['content'].get('throughput', 'N/A')} req/s\n"
+            f"  - Avg Response Time: {report['content'].get('average', 'N/A')} ms\n"
+            f"  - 90th Percentile: {report['content'].get('pct90', 'N/A')} ms\n"
+            f"  - 95th Percentile: {report['content'].get('pct95', 'N/A')} ms\n"
+            f"  - Error Rate: {report['content'].get('error_rate', 'N/A')}%\n"
+            f"  - Total Requests: {report['content'].get('total', 'N/A')}\n"
+            f"  - Failed Requests: {report['content'].get('ko', 'N/A')}"
+        )
+        for i, report in enumerate(reports_data)
+    ])
+
+    return ENHANCED_COMPARISON_PROMPT.format(
+        total_reports=total_reports,
+        reports_data=reports_summary
+    )
 
 __all__ = [
     'build_performance_analyst_prompt',

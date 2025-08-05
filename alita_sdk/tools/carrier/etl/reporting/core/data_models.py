@@ -252,6 +252,19 @@ class UIMetrics:
         self.numeric_value = numeric_value
 
 
+from langchain_core.pydantic_v1 import BaseModel, Field
+
+
+class PerformanceAnalysisResult(BaseModel):
+    """Structured result from LLM performance comparison analysis."""
+    summary: str = Field(..., description="Executive summary of performance comparison")
+    key_findings: List[str] = Field(..., description="List of key findings from the comparison")
+    performance_trends: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Identified performance trends")
+    recommendations: List[str] = Field(..., description="Actionable recommendations")
+    risk_assessment: Dict[str, Any] = Field(default_factory=dict, description="Risk assessment if performance degraded")
+    confidence_score: float = Field(default=0.8, description="Confidence in the analysis (0-1)")
+
+
 @dataclass(frozen=True)
 class UIPerformanceReport:
     """
@@ -290,6 +303,7 @@ class PerformanceReport:
     carrier_report_url: str = None
     thresholds: Optional[List[Any]] = None
     report_type: str = "GATLING"  # or "JMETER"
+    test_name: str = "Unknown Test"
     generated_at: datetime = field(default_factory=datetime.now)
 
     def __post_init__(self):

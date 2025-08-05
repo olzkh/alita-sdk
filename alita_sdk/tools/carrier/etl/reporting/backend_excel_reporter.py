@@ -3,7 +3,8 @@ Excel Workbook Generator
 Author: Karen Florykian
 """
 import logging
-from typing import List, Dict
+from copy import copy
+from typing import List, Dict, Optional
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
@@ -16,7 +17,7 @@ from .core.data_models import (
     TransactionMetrics,
     PerformanceStatus,
     ThresholdConfig,
-    ExcelFormattingConfig
+    ExcelFormattingConfig, PerformanceAnalysisResult
 )
 
 logger = logging.getLogger(__name__)
@@ -421,3 +422,295 @@ class ExcelReporter:
         wb.save(workbook_path)
         logger.info(f"Successfully updated workbook saved to '{workbook_path}'.")
         return True
+
+
+class ComparisonReporter:
+    """
+    Handles Excel comparison report generation with conditional formatting.
+    Follows KISS principle by separating comparison logic from single report logic.
+    """
+
+    def __init__(self, config: ExcelFormattingConfig = None):
+        self.config = config or ExcelFormattingConfig()
+        self.formatter = LegacyExcelFormatter(self.config)
+        self._setup_comparison_styles()
+
+    def _setup_comparison_styles(self):
+        """Setup comparison-specific styles"""
+        self.header_fill = PatternFill("solid", fgColor='00CDEBEA')
+        self.sub_header_fill = PatternFill("solid", fgColor='007FD5D8')
+        self.dropdown_fill = PatternFill("solid", fgColor='00E6E6E6')
+
+    def generate_comparison_workbook(
+            self,
+            baseline_report: PerformanceReport,
+            current_report: PerformanceReport,
+            comparison_analysis: Optional[PerformanceAnalysisResult] = None
+    ) -> Workbook:
+        """
+        Generate a comparison workbook with two reports side by side.
+        """
+        logger.info("Generating comparison workbook")
+        wb = Workbook()
+
+        # Create comparison summary sheet
+        ws_comparison = wb.active
+        ws_comparison.title = "Comparison"
+
+        # Add header section
+        self._add_comparison_header(ws_comparison, baseline_report, current_report)
+
+        # Add comparison table
+        start_row = self._add_comparison_table(ws_comparison, baseline_report, current_report, start_row=15)
+
+        # Add LLM analysis if available
+        if comparison_analysis:
+            self._add_llm_analysis_section(ws_comparison, comparison_analysis, start_row + 2)
+
+        # Create individual report sheets (hidden)
+        self._create_hidden_report_sheet(wb, baseline_report, "Baseline")
+        self._create_hidden_report_sheet(wb, current_report, "Current")
+
+        logger.info("Comparison workbook generated successfully")
+        return wb
+
+    def _add_comparison_header(self, ws: Worksheet, baseline: PerformanceReport, current: PerformanceReport):
+        """Add comparison header with test information"""
+        headers = [
+            ("Test Comparison", ""),
+            ("Baseline Test", baseline.summary.date_start),
+            ("Current Test", current.summary.date_start),
+            ("", ""),
+            ("Baseline Users", baseline.summary.max_user_count),
+            ("Current Users", current.summary.max_user_count),
+            ("Baseline Throughput", f"{baseline.summary.throughput:.2f} req/s"),
+            ("Current Throughput", f"{current.summary.throughput:.2f} req/s"),
+            ("Baseline Error Rate", f"{baseline.summary.error_rate:.2f}%"),
+            ("Current Error Rate", f"{current.summary.error_rate:.2f}%"),
+        ]
+
+        for row, (label, value) in enumerate(headers, 1):
+            if label:
+                ws.cell(row=row, column=1, value=label).fill = self.header_fill
+                ws.cell(row=row, column=1).font = Font(bold=True)
+            if value:
+                ws.cell(row=row, column=2, value=value).fill = self.header_fill
+                ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
+
+    def _add_comparison_table(self, ws: Worksheet, baseline: PerformanceReport, current: PerformanceReport,
+                              start_row: int) -> int:
+        """Add the main comparison table with conditional formatting"""
+
+        # Table headers
+        headers = [
+            ("Transaction", 1, 1),
+            ("Requests", 2, 3),
+            ("Errors", 4, 5),
+            ("Avg Response (s)", 6, 7),
+            ("95th Percentile (s)", 8, 9),
+            ("Difference", 10, 11),
+        ]
+
+        # Main headers
+        for header, start_col, end_col in headers:
+            ws.cell(row=start_row, column=start_col, value=header).fill = self.sub_header_fill
+            ws.cell(row=start_row, column=start_col).font = Font(bold=True)
+            if start_col != end_col:
+                ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=end_col)
+
+        # Sub headers
+        start_row += 1
+        sub_headers = ["", "Baseline", "Current", "Baseline", "Current", "Baseline", "Current", "Baseline", "Current",
+                       "Diff (s)", "Diff (%)"]
+        for col, header in enumerate(sub_headers, 1):
+            ws.cell(row=start_row, column=col, value=header).fill = self.sub_header_fill
+
+        # Get all unique transactions
+        all_transactions = set(baseline.transactions.keys()) | set(current.transactions.keys())
+        all_transactions.discard("Total")  # Remove Total, we'll add it at the end
+        sorted_transactions = sorted(all_transactions)
+        if "Total" in baseline.transactions or "Total" in current.transactions:
+            sorted_transactions.append("Total")
+
+        # Add transaction data
+        data_start_row = start_row + 1
+        for row_offset, tx_name in enumerate(sorted_transactions):
+            row = data_start_row + row_offset
+            # Transaction name
+            ws.cell(row=row, column=1, value=tx_name)
+
+            # Get metrics for both reports
+            baseline_metrics = baseline.transactions.get(tx_name, None)
+            current_metrics = current.transactions.get(tx_name, None)
+
+            # Helper function to safely get metric value
+            def get_metric(metrics, attr, divisor=1):
+                if metrics and hasattr(metrics, attr):
+                    value = getattr(metrics, attr)
+                    return value / divisor if value else 0
+                return 0
+
+            # Fill comparison data
+            ws.cell(row=row, column=2, value=get_metric(baseline_metrics, 'Total'))
+            ws.cell(row=row, column=3, value=get_metric(current_metrics, 'Total'))
+            ws.cell(row=row, column=4, value=get_metric(baseline_metrics, 'KO'))
+            ws.cell(row=row, column=5, value=get_metric(current_metrics, 'KO'))
+            ws.cell(row=row, column=6, value=round(get_metric(baseline_metrics, 'average', 1000), 3))
+            ws.cell(row=row, column=7, value=round(get_metric(current_metrics, 'average', 1000), 3))
+            ws.cell(row=row, column=8, value=round(get_metric(baseline_metrics, 'pct_95', 1000), 3))
+            ws.cell(row=row, column=9, value=round(get_metric(current_metrics, 'pct_95', 1000), 3))
+
+            # Calculate differences
+            baseline_p95 = get_metric(baseline_metrics, 'pct_95', 1000)
+            current_p95 = get_metric(current_metrics, 'pct_95', 1000)
+
+            if baseline_p95 > 0:
+                diff_seconds = current_p95 - baseline_p95
+                diff_percent = (diff_seconds / baseline_p95) * 100
+                ws.cell(row=row, column=10, value=round(diff_seconds, 3))
+                ws.cell(row=row, column=11, value=round(diff_percent, 2))
+                ws.cell(row=row, column=11).number_format = '0.00%'
+
+            # Apply borders
+            for col in range(1, 12):
+                ws.cell(row=row, column=col).border = Border(
+                    top=Side(border_style="thin", color="040404"),
+                    left=Side(border_style="thin", color="040404"),
+                    right=Side(border_style="thin", color="040404"),
+                    bottom=Side(border_style="thin", color="040404")
+                )
+
+            # Highlight Total row
+            if tx_name == "Total":
+                for col in range(1, 12):
+                    ws.cell(row=row, column=col).font = Font(bold=True)
+                    ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor='007FD5D8')
+
+            # Apply conditional formatting
+        self._apply_comparison_conditional_formatting(ws, data_start_row, row)
+
+        # Auto-adjust column widths
+        for col in range(1, 12):
+            ws.column_dimensions[get_column_letter(col)].auto_size = True
+
+        return row + 1
+
+    def _apply_comparison_conditional_formatting(self, ws: Worksheet, start_row: int, end_row: int):
+        """Apply conditional formatting to comparison table"""
+
+        # Response time thresholds (in seconds)
+        rt_threshold = self.config.response_time_warning / 1000
+        rt_critical = self.config.response_time_critical / 1000
+
+        # Format response time columns (6-9)
+        for col in [6, 7, 8, 9]:
+            col_letter = get_column_letter(col)
+            range_str = f"{col_letter}{start_row}:{col_letter}{end_row}"
+
+            # Green for good performance
+            ws.conditional_formatting.add(
+                range_str,
+                CellIsRule(operator='lessThan', formula=[rt_threshold], fill=self.formatter.green_fill)
+            )
+            # Yellow for warning
+            ws.conditional_formatting.add(
+                range_str,
+                CellIsRule(operator='between', formula=[rt_threshold, rt_critical], fill=self.formatter.yellow_fill)
+            )
+            # Red for critical
+            ws.conditional_formatting.add(
+                range_str,
+                CellIsRule(operator='greaterThan', formula=[rt_critical], fill=self.formatter.red_fill)
+            )
+
+        # Format difference columns
+        # Difference in seconds (column 10)
+        diff_range = f"J{start_row}:J{end_row}"
+        ws.conditional_formatting.add(
+            diff_range,
+            CellIsRule(operator='lessThan', formula=[0], fill=self.formatter.green_fill)
+        )
+        ws.conditional_formatting.add(
+            diff_range,
+            CellIsRule(operator='greaterThan', formula=[5], fill=self.formatter.red_fill)
+        )
+
+        # Difference in percentage (column 11)
+        pct_range = f"K{start_row}:K{end_row}"
+        ws.conditional_formatting.add(
+            pct_range,
+            CellIsRule(operator='lessThan', formula=[0], fill=self.formatter.green_fill)
+        )
+        ws.conditional_formatting.add(
+            pct_range,
+            CellIsRule(operator='greaterThan', formula=[0.1], fill=self.formatter.red_fill)  # 10%
+        )
+
+    def _add_llm_analysis_section(self, ws: Worksheet, analysis: PerformanceAnalysisResult, start_row: int):
+        """Add LLM analysis section to the comparison sheet"""
+
+        # Section header
+        ws.cell(row=start_row, column=1, value="AI Performance Analysis").font = Font(bold=True, size=14)
+        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=11)
+
+        current_row = start_row + 2
+
+        # Summary
+        ws.cell(row=current_row, column=1, value="Summary:").font = Font(bold=True)
+        ws.cell(row=current_row, column=2, value=analysis.summary)
+        ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=11)
+        ws.row_dimensions[current_row].height = max(30, 15 * (analysis.summary.count('\n') + 1))
+        current_row += 2
+
+        # Key Findings
+        if analysis.key_findings:
+            ws.cell(row=current_row, column=1, value="Key Findings:").font = Font(bold=True)
+            current_row += 1
+            for finding in analysis.key_findings:
+                ws.cell(row=current_row, column=2, value=f"• {finding}")
+                ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=11)
+                current_row += 1
+            current_row += 1
+
+        # Recommendations
+        if analysis.recommendations:
+            ws.cell(row=current_row, column=1, value="Recommendations:").font = Font(bold=True)
+            current_row += 1
+            for rec in analysis.recommendations:
+                ws.cell(row=current_row, column=2, value=f"• {rec}")
+                ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=11)
+                current_row += 1
+
+        # Risk Assessment
+        if analysis.risk_assessment:
+            current_row += 1
+            ws.cell(row=current_row, column=1, value="Risk Level:").font = Font(bold=True)
+            risk_level = analysis.risk_assessment.get('level', 'Unknown')
+            risk_color = {
+                'Low': self.formatter.green_font_color,
+                'Medium': 'FFA500',  # Orange
+                'High': self.formatter.red_font_color
+            }.get(risk_level, '000000')
+
+            ws.cell(row=current_row, column=2, value=risk_level).font = Font(bold=True, color=risk_color)
+
+    def _create_hidden_report_sheet(self, wb: Workbook, report: PerformanceReport, sheet_name: str):
+        """Create a hidden sheet with individual report data"""
+        ws = wb.create_sheet(sheet_name)
+        ws.sheet_state = 'hidden'
+
+        # Use the existing formatter to create the report
+        reporter = ExcelReporter(self.config)
+        temp_wb = reporter.generate_workbook(report)
+        source_ws = temp_wb.active
+
+        # Copy all cells from temp workbook
+        for row in source_ws.iter_rows():
+            for cell in row:
+                new_cell = ws.cell(row=cell.row, column=cell.column, value=cell.value)
+                if cell.has_style:
+                    new_cell.font = copy(cell.font)
+                    new_cell.fill = copy(cell.fill)
+                    new_cell.border = copy(cell.border)
+                    new_cell.alignment = copy(cell.alignment)
+                    new_cell.number_format = cell.number_format

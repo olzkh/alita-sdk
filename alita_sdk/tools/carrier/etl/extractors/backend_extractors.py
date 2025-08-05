@@ -88,3 +88,36 @@ class CarrierArtifactExtractor(BaseExtractor):
                 "success": True
             }
         }
+
+
+class ComparisonExtractor(BaseExtractor):
+    """
+    A simple extractor for comparison pipelines. It doesn't fetch new data,
+    but instead validates and passes through the list of report metadata
+    provided in the initial context.
+    """
+
+    def __init__(self):
+        super().__init__()
+        logger.info("ComparisonExtractor initialized")
+
+    def extract(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extracts the list of report metadata from the context.
+        """
+        logger.info("Starting comparison extraction...")
+        try:
+            reports_meta = context["reports_meta"]
+            if not isinstance(reports_meta, list) or len(reports_meta) < 2:
+                raise ToolException("Comparison requires at least two reports in 'reports_meta'.")
+
+            logger.info(f"Found {len(reports_meta)} reports to compare.")
+
+            # The "extracted" data is simply the list of reports to be processed.
+            return {"reports_meta": reports_meta}
+
+        except KeyError:
+            raise ToolException("Comparison context is missing the required 'reports_meta' key.")
+        except Exception as e:
+            logger.error(f"Comparison extraction failed: {e}", exc_info=True)
+            raise ToolException(f"Failed to extract comparison data: {str(e)}")

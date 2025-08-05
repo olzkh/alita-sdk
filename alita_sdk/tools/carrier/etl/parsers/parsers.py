@@ -5,7 +5,7 @@ import pandas as pd
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Any
 import numpy as np
 
 from alita_sdk.tools.carrier.utils.utils import GATLING_CONFIG
@@ -314,18 +314,38 @@ class JMeterReportParser(BaseReportParser):
         }
         return create_transaction_metrics_from_stats(name, stats)
 
+    def _to_datetime_from_millis(self, timestamp_ms: Any) -> datetime:
+        """
+        Safely converts a JMeter timestamp (in milliseconds) to a datetime object.
+        - Handles potential non-numeric or out-of-range data.
+        - Provides a safe fallback to the current time to prevent crashes.
+        """
+        try:
+            # Attempt to convert to a numeric type first
+            ts_numeric = float(timestamp_ms)
+            # Convert milliseconds to seconds for fromtimestamp
+            return datetime.fromtimestamp(ts_numeric / 1000.0)
+        except (ValueError, TypeError, OSError) as e:
+            self.logger.warning(
+                f"Could not parse timestamp '{timestamp_ms}'. Error: {e}. Falling back to current time."
+            )
+            # Return a valid datetime object to ensure type safety downstream
+            return datetime.now()
+
     def _create_summary(self) -> ReportSummary:
         """(Private helper) Creates a validated ReportSummary object from the DataFrame."""
         if self.df is None or self.df.empty:
             self.logger.warning("Cannot create summary from empty DataFrame.")
-            # Return a default empty summary to avoid crashes downstream
-            return ReportSummary(max_user_count=0, ramp_up_period=0, error_rate=0, date_start="", date_end="",
-                                 throughput=0, duration=0, think_time=0)
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            return ReportSummary(max_user_count=0, ramp_up_period=0, error_rate=0, date_start=now_str, date_end=now_str,
+                                 throughput=0, duration=0, think_time="0")
 
         df_sorted = self.df.sort_values(by=['timeStamp'])
-        start_ts = df_sorted['timeStamp'].iloc[0]
-        end_ts = df_sorted['timeStamp'].iloc[-1]
-        duration_seconds = (end_ts - start_ts) / 1000.0
+        start_ts_ms = df_sorted['timeStamp'].iloc[0]
+        end_ts_ms = df_sorted['timeStamp'].iloc[-1]
+        duration_seconds = (end_ts_ms - start_ts_ms) / 1000.0
+        start_dt = self._to_datetime_from_millis(start_ts_ms)
+        end_dt = self._to_datetime_from_millis(end_ts_ms)
 
         total_requests = len(df_sorted)
         ok_requests = len(df_sorted[df_sorted['success'] == True])
@@ -338,10 +358,10 @@ class JMeterReportParser(BaseReportParser):
         try:
             summary = ReportSummary(
                 max_user_count=max_user_count,
-                ramp_up_period=0,  # JMeter logs don't have a clear ramp-up period like Gatling
+                ramp_up_period=0,
                 error_rate=error_rate,
-                date_start=datetime.fromtimestamp(start_ts / 1000.0).strftime('%Y-%m-%d %H:%M:%S'),
-                date_end=datetime.fromtimestamp(end_ts / 1000.0).strftime('%Y-%m-%d %H:%M:%S'),
+                date_start=start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                date_end=end_dt.strftime('%Y-%m-%d %H:%M:%S'),
                 throughput=round(throughput, 2),
                 duration=round(duration_seconds, 2),
                 think_time=str(self.calculated_think_time)

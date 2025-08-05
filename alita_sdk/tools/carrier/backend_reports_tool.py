@@ -1,5 +1,4 @@
 import json
-import os
 from typing import Type, List, Dict, Any, Optional
 from datetime import datetime
 import logging
@@ -12,10 +11,6 @@ from .etl.etl_factory import ETLComponentFactory
 
 logger = logging.getLogger(__name__)
 
-
-# =========================================================================
-#  PRODUCTION-READY INPUT SCHEMAS WITH ENHANCED VALIDATION
-# =========================================================================
 
 class BaseToolInput(BaseModel):
     """🔧 Base input schema with common validation patterns."""
@@ -504,80 +499,6 @@ class CreateBackendTestTool(BaseCarrierTool):
             self.handle_api_error(operation, e)
 
 
-class CreateBackendReportTool(BaseTool):
-    """🚀 Generate Excel reports using ETL pipeline and factory pattern."""
-
-    name: str = "process_and_generate_report"
-    description: str = """Generate Excel reports from performance test results.
-
-    Parameters:
-    - report_id (required): The ID of the report to process
-    """
-
-    def __init__(self, api_wrapper: 'CarrierAPIWrapper'):
-        super().__init__()
-        self._api_wrapper = api_wrapper
-
-        logger.info("🚀 ProcessAndGenerateReportTool initialized")
-
-    def _run(self, report_id: str):
-        """
-        🎯 Process report using ETL factory - Simple and DRY.
-        """
-        try:
-            logger.info(f"🚀 Processing report {report_id} using ETL factory")
-            report = self._api_wrapper.get_report_metadata(report_id)
-            if report['lg_type'] == 'jmeter':
-                pipeline = ETLComponentFactory.get_pipeline("jmeter_to_excel")
-            elif report['lg_type'] == 'gatling':
-                pipeline = ETLComponentFactory.get_pipeline("gatling_to_excel")
-            else:
-                raise Exception
-            logger.info("✅ ETL pipeline obtained from factory")
-
-            # Step 2: Prepare context with default parameters
-            context = {
-                "api_wrapper": self._api_wrapper,
-                "report_id": str(report_id),
-                "think_time": "2,0-5,0",
-                "pct": "95Pct",
-                "tp_threshold": 10,
-                "rt_threshold": 500,
-                "er_threshold": 5
-            }
-
-            result = pipeline.run(context)
-            logger.info(f"🔍 Loader result type: {type(result)}")
-            logger.info(f"🔍 Loader result content: {result}")
-
-            # ✅ Extract key information for response
-            if isinstance(result, dict) and result.get("status") == "success":
-                download_url = result.get("download_url", "No download link available")
-                file_name = result.get("file_name", "Unknown file")
-
-                return f"✅ Excel report generated successfully! File: {file_name}, Download: {download_url}"
-            else:
-                return f"⚠️ Processing completed with issues: {result}"
-
-            # Step 4: Format result for user
-        # return self._format_success_result(result)
-        except Exception as e:
-            logger.error(f"💥 Processing failed for report {report_id}: {str(e)}")
-            return f"❌ Failed to process report {report_id}: {str(e)}"
-
-    def _format_success_result(self, result: dict) -> str:
-        """📝 Format successful result for user."""
-        if result.get("status") == "Success":
-            filename = result.get("excel_filename", "report.xlsx")
-            download = result.get("download_link", "")
-
-            return (f"✅ Excel report generated successfully!\n"
-                    f"📊 File: {filename}\n"
-                    f"🔗 Download: {download}")
-        else:
-            return f"❌ Processing failed: {result.get('error', 'Unknown error')}"
-
-
 class GetReportsTool(BaseCarrierTool):
     """📋 Retrieves and filters performance reports with advanced sorting."""
 
@@ -694,212 +615,215 @@ class GetReportsTool(BaseCarrierTool):
         return value
 
 
-# Snippet to REPLACE the entire GetReportByIDTool class
-
 class GetReportByIDTool(BaseCarrierTool):
-    """🔍 Retrieves detailed report information with error analysis."""
+    """Tool for retrieving performance test report by ID."""
 
     name: str = "get_report_by_id"
-    description: str = "🔍 Get detailed report information including error analysis"
-    args_schema: Type[BaseModel] = GetReportByIdInput
+    description: str = "Get performance test report details by report ID"
 
-    def _run(self, report_id: str, include_errors: bool = True, error_limit: int = 100) -> str:
-        operation = f"analyzing report {report_id}"
-        start_time = datetime.now()
-
-        self.log_operation_start(
-            operation,
-            report_id=report_id,
-            include_errors=include_errors,
-            error_limit=error_limit
-        )
+    def _run(self, report_id: str) -> str:
+        """Execute report retrieval."""
+        operation = f"retrieving report {report_id}"
 
         try:
-            # Step 1: Use the new, clean wrapper method to process artifacts.
-            # This call handles the download/unzip/merge logic and returns the final paths.
-            artifact_data = self.api_wrapper.process_report_artifacts(report_id)
-            report_metadata = artifact_data["metadata"]
-            error_log_path = artifact_data["error_log_path"]
+            logger.info(f"🚀 Starting {operation}")
 
-            # Step 2: Process errors if requested, using the path from the artifact data.
-            error_analysis = {"errors_included": False, "error_count": 0}
-            if include_errors:
-                error_analysis = self._analyze_errors(error_log_path, error_limit)
+            # Get report metadata
+            report_info = self.api_wrapper.get_report_metadata(report_id)
 
-            # Step 3: Enhance the metadata with recommendations.
-            enhanced_report = self._enhance_with_recommendations(report_metadata, error_analysis)
+            if not report_info:
+                return f"❌ Report {report_id} not found"
 
-            duration = (datetime.now() - start_time).total_seconds()
-            self.log_operation_success(operation, duration)
-
-            return json.dumps({
-                "message": "📋 Detailed report analysis completed",
-                "report_id": report_id,
-                "analysis_timestamp": datetime.now().isoformat(),
-                "report_details": enhanced_report,
-                "error_analysis": error_analysis,
-                "processing_time_seconds": round(duration, 2)
-            }, indent=2)
+            # Format and return the report summary
+            return self._format_report_summary(report_info, report_id)
 
         except Exception as e:
-            self.handle_api_error(operation, e)
+            error_msg = f"💥 Failed {operation}: {str(e)}"
+            logger.error(error_msg)
+            raise ToolException(error_msg)
 
-    def _analyze_errors(self, error_log_path: str, limit: int) -> Dict:
-        """Analyze error logs with conditional processing."""
-        # This method no longer needs the 'report' dict passed to it.
-        if not error_log_path or not os.path.exists(error_log_path):
-            return {
-                "errors_included": False,
-                "message": "📂 No error log file found or created. The test likely completed without errors."
-            }
-
+    def _format_report_summary(self, report_info: Dict[str, Any], report_id: str) -> str:
+        """Format report information into a readable summary."""
         try:
-            with open(error_log_path, 'r', encoding='utf-8') as f:
-                error_lines = [line.strip() for line in f.readlines()[:limit] if line.strip()]
+            # Extract key information
+            test_name = report_info.get('name', 'Unknown')
+            status = report_info.get('status', 'Unknown')
+            start_time = report_info.get('start_time', 'N/A')
+            duration = report_info.get('duration', 'N/A')
 
-            return {
-                "errors_included": True,
-                "error_count": len(error_lines),
-                "errors_preview": error_lines[:10],  # Show first 10 errors
-                "error_analysis": self._categorize_errors(error_lines),
-                "recommendations": self._get_error_recommendations(error_lines)
-            }
+            # Build summary
+            summary = f"""
+📊 **Performance Test Report #{report_id}**
+
+**Test Name:** {test_name}
+**Status:** {status}
+**Start Time:** {start_time}
+**Duration:** {duration}
+
+**Key Metrics:**
+"""
+
+            # Add performance metrics if available
+            if 'metrics' in report_info:
+                metrics = report_info['metrics']
+                summary += f"""
+- **Total Requests:** {metrics.get('total_requests', 'N/A')}
+- **Success Rate:** {metrics.get('success_rate', 'N/A')}%
+- **Average Response Time:** {metrics.get('avg_response_time', 'N/A')} ms
+- **95th Percentile:** {metrics.get('p95_response_time', 'N/A')} ms
+- **Throughput:** {metrics.get('throughput', 'N/A')} req/s
+"""
+
+            # Add error information if any
+            if 'errors' in report_info and report_info['errors']:
+                summary += "\n**Errors:**\n"
+                for error in report_info['errors'][:5]:  # Show first 5 errors
+                    summary += f"- {error}\n"
+
+            # Add link to full report if available
+            if hasattr(self.api_wrapper, 'url'):
+                report_url = f"{self.api_wrapper.url.strip('/')}/-/performance/backend/results?result_id={report_id}"
+                summary += f"\n🔗 [View Full Report]({report_url})"
+
+            return summary
+
         except Exception as e:
-            logger.warning(f"⚠️ Error processing log file {error_log_path}: {e}")
-            return {
-                "errors_included": False,
-                "error": f"Failed to process error logs: {str(e)}"
+            logger.error(f"Error formatting report summary: {e}")
+            # Return basic info if formatting fails
+            return f"Report #{report_id}: {report_info}"
+
+
+class CreateBackendExcelReportInput(BaseModel):
+    """Input schema for CreateBackendExcelReportTool."""
+    report_id: Optional[str] = Field(None, description="Report ID for single report generation")
+    test_name: Optional[str] = Field(None, description="Test name for comparison report generation")
+    run_count: int = Field(5, ge=1, le=20, description="Number of recent runs to compare (default: 5)")
+    enable_ai_analysis: bool = Field(True, description="Enable AI-powered analysis (default: True)")
+    output_format: str = Field(default="excel", description="📋 Output format")
+
+
+class CreateBackendExcelReportTool(BaseCarrierTool):
+    """
+    Tool for creating backend performance Excel reports.
+    Supports single-report generation and multi-report comparisons.
+    """
+
+    name: str = "create_backend_excel_report"
+    description: str = "Create an Excel report from backend performance test results."
+    args_schema: Type[BaseModel] = CreateBackendExcelReportInput
+    llm: Optional[Any] = Field(default=None, description="Language model for AI analysis")
+
+    def __init__(self, api_wrapper: CarrierAPIWrapper, llm: Optional[Any] = None, **kwargs):
+        super().__init__(api_wrapper=api_wrapper, **kwargs)
+        self.llm = llm
+        logger.info("CreateBackendExcelReportTool initialized.")
+
+    def _run(self, **kwargs) -> str:
+        """Validates input and routes to the correct report creation method."""
+        try:
+            # Pydantic model validation handles type conversion and constraints
+            params = CreateBackendExcelReportInput(**kwargs)
+            llm = kwargs.get('llm', self.llm)
+
+            if params.report_id and params.test_name:
+                return self._error_response("Provide either 'report_id' or 'test_name', not both.")
+
+            if params.report_id:
+                return self._create_single_report(params.report_id, llm)
+
+            if params.test_name:
+                return self._create_comparison_report(params.test_name, params.run_count, params.enable_ai_analysis,
+                                                      llm)
+
+            return self._error_response("Either 'report_id' or 'test_name' must be provided.")
+
+        except Exception as e:
+            logger.error(f"Report creation failed: {e}", exc_info=True)
+            return self._error_response(f"An unexpected error occurred: {e}")
+
+    def _create_single_report(self, report_id: str, llm: Optional[Any]) -> str:
+        """Generates an Excel report for a single test run."""
+        logger.info(f"Creating single report for ID: {report_id}")
+        try:
+            report_meta = self.api_wrapper.get_report_metadata(report_id)
+            lg_type = report_meta.get('lg_type', 'jmeter').lower()
+            pipeline = ETLComponentFactory.get_pipeline(f"{lg_type}_to_excel")
+
+            context = {"api_wrapper": self.api_wrapper, "report_id": report_id, "llm": llm, "user_args": {}}
+            result = pipeline.run(context)
+
+            if result.get("status") == "success":
+                return self._success_response({
+                    "message": "Single report created successfully.",
+                    "download_url": result.get("download_url", "N/A")
+                })
+            return self._error_response(f"Pipeline execution failed: {result.get('error', 'Unknown error')}")
+
+        except Exception as e:
+            logger.error(f"Single report creation for ID {report_id} failed: {e}", exc_info=True)
+            return self._error_response(str(e))
+
+    def _create_comparison_report(self, test_name: str, run_count: int, enable_ai: bool, llm: Optional[Any]) -> str:
+        """Generates a comparison report across multiple test runs."""
+        logger.info(f"Creating comparison report for test: '{test_name}' using last {run_count} runs.")
+        try:
+            reports_meta = self._get_recent_test_reports(test_name, run_count)
+            if len(reports_meta) < 2:
+                return self._error_response(f"Found only {len(reports_meta)} finished reports. Need at least 2.")
+
+            lg_type = reports_meta[0].get('lg_type', 'jmeter').lower()
+            pipeline = ETLComponentFactory.get_pipeline(f"{lg_type}_comparison_between_the_tests")
+
+            context = {
+                "api_wrapper": self.api_wrapper,
+                "llm": llm,
+                "reports_meta": reports_meta,
+                "enable_ai_analysis": enable_ai,
+                "test_name": test_name,
+                "user_args": {}
             }
+            result = pipeline.run(context)
 
-    def _categorize_errors(self, error_lines: List[str]) -> Dict:
-        """Categorize errors for better analysis."""
-        categories = {
-            "timeout_errors": 0,
-            "connection_errors": 0,
-            "http_errors": 0,
-            "other_errors": 0
-        }
+            if result.get("status") == "success":
+                return self._success_response({
+                    "message": "Consolidated comparison report created successfully.",
+                    "reports_analyzed": len(reports_meta),
+                    "download_url": result.get("download_url", "N/A")
+                })
 
-        for line in error_lines:
-            line_lower = line.lower()
-            if "timeout" in line_lower or "timed out" in line_lower:
-                categories["timeout_errors"] += 1
-            elif "connection" in line_lower or "connect" in line_lower:
-                categories["connection_errors"] += 1
-            elif any(code in line for code in ["4xx", "5xx", "404", "500", "502", "503"]):
-                categories["http_errors"] += 1
-            else:
-                categories["other_errors"] += 1
+            error_message = result.get('error', 'Unknown error during pipeline execution')
+            return self._error_response(f"Comparison pipeline failed: {error_message}")
 
-        return categories
+        except Exception as e:
+            logger.error(f"Comparison report for '{test_name}' failed: {e}", exc_info=True)
+            return self._error_response(str(e))
 
-    def _get_error_recommendations(self, error_lines: List[str]) -> List[str]:
-        """Generate recommendations based on error patterns."""
-        recommendations = []
-        error_text = " ".join(error_lines).lower()
+    def _get_recent_test_reports(self, test_name: str, run_count: int) -> List[Dict]:
+        """Fetches metadata for recent, finished test runs."""
+        all_reports = self.api_wrapper.get_reports_list()
 
-        if "timeout" in error_text:
-            recommendations.append("🕐 Consider increasing timeout values")
-        if "connection" in error_text:
-            recommendations.append("🌐 Check network connectivity and target system capacity")
-        if "502" in error_text or "503" in error_text:
-            recommendations.append("⚡ Target system may be overloaded - reduce load or check system health")
-        if len(error_lines) > 50:
-            recommendations.append("🔍 High error count detected - investigate system stability before retesting")
+        finished_reports = [
+            r for r in all_reports
+            if r.get("name") == test_name and self._is_finished_status(r)
+        ]
 
-        return recommendations or ["✅ Error patterns look manageable - safe to proceed with analysis"]
+        return sorted(
+            finished_reports,
+            key=lambda r: r.get("start_time", ""),
+            reverse=True
+        )[:run_count]
 
-    def _enhance_with_recommendations(self, report: Dict, error_analysis: Dict) -> Dict:
-        """Enhance report with processing recommendations."""
-        enhanced = dict(report)  # Copy original report
+    def _is_finished_status(self, report: Dict) -> bool:
+        """Checks if a report's status is 'finished'."""
+        status_info = report.get("test_status", {})
+        if isinstance(status_info, dict):
+            return status_info.get("status", "").lower() == "finished"
+        return str(status_info).lower() == "finished"
 
-        status_raw = report.get("test_status", "unknown")
-        if isinstance(status_raw, dict):
-            status = str(status_raw.get("status", "unknown")).lower()
-        else:
-            status = str(status_raw).lower()
+    def _success_response(self, data: Dict) -> str:
+        """Formats a standard success JSON response."""
+        return json.dumps({"status": "success", **data}, indent=2)
 
-        lg_type_raw = report.get("lg_type", "")
-        if isinstance(lg_type_raw, dict):
-            lg_type = str(lg_type_raw.get("type", "")).lower()
-        else:
-            lg_type = str(lg_type_raw).lower()
-
-        enhanced["processing_recommendations"] = {
-            "status_assessment": self._assess_status(status),
-            "recommended_pipeline": f"{lg_type}_to_excel" if lg_type in ["gatling", "jmeter"] else "check_type",
-            "readiness_score": self._calculate_readiness_score(status, error_analysis),
-            "next_steps": self._generate_next_steps(status, lg_type, error_analysis)
-        }
-
-        logger.info(f"✅ Enhanced report with recommendations for status: {status}, lg_type: {lg_type}")
-        return enhanced
-
-    def _assess_status(self, status: str) -> Dict:
-        """Assess test status for processing readiness."""
-        assessments = {
-            "finished": {"ready": True, "message": "✅ Ready for processing"},
-            "failed": {"ready": False, "message": "❌ Review errors before processing"},
-            "running": {"ready": False, "message": "🔄 Wait for completion"},
-            "stopped": {"ready": True, "message": "⚠️ Partial data available"}
-        }
-        return assessments.get(status, {"ready": False, "message": f"❓ Unknown status: {status}"})
-
-    def _calculate_readiness_score(self, status: str, error_analysis: Dict) -> int:
-        """Calculate readiness score from 0-100."""
-        score = 0
-        if status == "finished":
-            score += 60
-        elif status == "stopped":
-            score += 40
-        elif status == "failed":
-            score += 20
-
-        error_count = error_analysis.get("error_count", 0)
-        if error_count == 0:
-            score += 40
-        elif error_count < 10:
-            score += 30
-        elif error_count < 50:
-            score += 20
-        else:
-            score += 10
-        return min(score, 100)
-
-    def _generate_next_steps(self, status: str, lg_type: str, error_analysis: Dict) -> List[Dict]:
-        """Generate actionable next steps with conditional logic and priority assessment."""
-        steps = []
-        readiness_score = self._calculate_readiness_score(status, error_analysis)
-        error_count = error_analysis.get("error_count", 0)
-
-        if status == "finished" and error_count < 10 and readiness_score >= 80:
-            steps.append(
-                {"action": "🚀 Generate Excel Report", "tool": "process_and_generate_report", "priority": "high",
-                 "description": "Ready for immediate processing - optimal conditions detected"})
-        if error_count > 0:
-            severity = "critical" if error_count > 100 else "moderate" if error_count > 20 else "minor"
-            steps.append({"action": f"🔍 Review {severity.title()} Error Patterns",
-                          "priority": "medium" if severity != "critical" else "high",
-                          "description": f"Analyze {error_count} errors for performance insights"})
-        if lg_type in ["gatling", "jmeter"]:
-            pipeline_type = f"{lg_type}_to_excel"
-            steps.append(
-                {"action": f"⚙️ Process with {lg_type.title()} Pipeline", "tool": "process_and_generate_report",
-                 "priority": "medium" if readiness_score >= 60 else "low",
-                 "description": f"Use {pipeline_type} for optimized report generation"})
-        if status == "failed":
-            steps.append({"action": "🔧 Investigate Test Failure", "priority": "high",
-                          "description": "Review test configuration and system availability before retry"})
-        elif status == "running":
-            steps.append({"action": "⏳ Monitor Test Progress", "priority": "low",
-                          "description": "Wait for completion before processing"})
-        elif status == "stopped":
-            steps.append({"action": "📊 Partial Data Analysis", "priority": "medium",
-                          "description": "Extract insights from incomplete test data"})
-        if not steps:
-            steps.append({"action": "🔍 Manual Review Required", "priority": "medium",
-                          "description": "Report status requires manual assessment"})
-
-        priority_order = {"high": 3, "medium": 2, "low": 1}
-        steps.sort(key=lambda x: priority_order.get(x["priority"], 0), reverse=True)
-        return steps
+    def _error_response(self, message: str) -> str:
+        """Formats a standard error JSON response."""
+        return json.dumps({"status": "error", "message": f"❌ {message}"}, indent=2)

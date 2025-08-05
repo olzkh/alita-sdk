@@ -39,6 +39,67 @@ class GatlingConfig:
     REQUEST_MIN_PARTS: int = 6
     GROUP_MIN_PARTS: int = 6
 
+
+"""
+Auto-comparison
+"""
+COMPARISON_SHEET_TITLE = 'comparison'
+CONSOLIDATED_REPORT_NAME = 'Comparison_report'
+COMPARISON_REPORT = os.path.join('/tmp', CONSOLIDATED_REPORT_NAME)
+
+TESTS_SHEET_TITLE = 'tests'
+RESULTS_SHEET_TITLE = 'Test results'
+TEXT_FOR_FIRST_DROPDOWN = 'test1 (choose from dropdown)'
+TEXT_FOR_SECOND_DROPDOWN = 'test2 (choose from dropdown)'
+ADDITIONAL_COLUMN_WIDTH = 5
+TRANSACTION_COLUMN_WIDTH = 30
+DROPDOWN_COLOR = '00E9F090'
+MAIN_HEADER_COLOR = '006ED6EB'
+SUB_HEADER_COLOR = '00B8DEE6'
+RED_COLOR = 'F7A9A9'
+GREEN_COLOR = 'AFF2C9'
+YELLOW_COLOR = 'F7F7A9'
+
+LISTS_LIMIT = 30
+
+"""
+Auto-comparison
+"""
+CONSOLIDATED_REPORT_NAME = 'Comparison_report'
+
+
+COMPARISON_COLUMN_HEADERS = {
+    'transaction': "Transaction",
+    'req_count': "Req, count",
+    'error_count': "KO, count",
+    'min': "Min, sec",
+    'avg': "Avg, sec",
+    'percentile90': "90p, sec",
+    'difference': "Difference, 90 pct",
+    'max': "Max, sec"
+}
+
+COMPARISON_MAIN_HEADERS = {
+    'users_count': 'Users',
+    'ramp_up': 'Ramp Up, min',
+    'duration': 'Duration, min',
+    'think_time': 'Think time, sec',
+    'start_date': 'Start Date, EST',
+    'end_date': 'End Date, EST',
+    'throughput': 'Throughput, req/sec',
+    'error_rate': 'Error rate, %'
+}
+
+COMPARISON_MAIN_HEADERS_LR = {
+    'users_count': 'Users',
+    'duration': 'Duration, min',
+    'start_date': 'Start Date, EST',
+    'end_date': 'End Date, EST',
+    'throughput': 'Throughput, req/sec',
+    'error_rate': 'Error rate, %'
+}
+
+LR = "loadrunner"
 # =================================================================================
 # EXCEL STYLING THEME
 # =================================================================================
@@ -286,25 +347,6 @@ class CarrierArtifactUploader:
 from langchain_core.pydantic_v1 import BaseModel as LangchainBaseModel
 from abc import ABC, abstractmethod
 
-# ==============================================================================
-# PROMPT TEMPLATES - Pattern
-# ==============================================================================
-
-REPORT_ANALYSIS_PROMPT = """
-You are a Performance Analysis expert tasked with analyzing test reports and providing insights.
-Your task is to generate a structured analysis of performance test results including:
-
-Guidelines:
-- report_type: Classify the report type (baseline, comparison, ui_performance)
-- key_metrics: Extract and summarize key performance indicators
-- issues_found: List any performance issues or anomalies detected
-- recommendations: Provide actionable recommendations for improvement
-- comparison_insights: If comparing reports, highlight differences and trends
-
-Content to analyze: {report_content}
-Baseline data (if available): {baseline_data}
-"""
-
 
 class ReportInsights(LangchainBaseModel):
     """Performance report analysis insights"""
@@ -350,19 +392,19 @@ class FileType(Enum):
     ZIP = ".zip"
 
 
-
 def tool_logger(func):
     """
     A decorator that provides extended, structured logging for tool execution.
     It logs entry, exit, arguments, return values, and exceptions.
     """
+
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
         tool_name = self.name
         # Combine args and kwargs for a complete picture of the input
         all_args = {**kwargs}
         # Handle positional arguments if any (rare for these tools)
-        arg_names = func.__code__.co_varnames[1:func.__code__.co_argcount] # [1:] to skip 'self'
+        arg_names = func.__code__.co_varnames[1:func.__code__.co_argcount]  # [1:] to skip 'self'
         for i, arg in enumerate(args):
             all_args[arg_names[i]] = arg
 
@@ -371,7 +413,7 @@ def tool_logger(func):
 
         try:
             result = func(self, *args, **kwargs)
-            logger.debug(f"[{tool_name}] Raw result: {str(result)[:250]}...") # Log a preview of the result
+            logger.debug(f"[{tool_name}] Raw result: {str(result)[:250]}...")  # Log a preview of the result
             logger.info(f"[{tool_name}] <--- Tool execution successful.")
             return result
         except Exception as e:
@@ -384,4 +426,5 @@ def tool_logger(func):
                 logger.error(f"[{tool_name}] <--- Tool execution failed with unhandled exception: {e}\n{stack_trace}")
             # Re-raise the exception so the framework can handle it
             raise
+
     return wrapper

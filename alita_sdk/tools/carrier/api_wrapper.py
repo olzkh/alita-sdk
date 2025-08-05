@@ -103,6 +103,35 @@ class CarrierAPIWrapper(BaseModel):
     def get_ui_tests_list(self) -> List[Dict[str, Any]]:
         return self._api_call('get_ui_tests_list')
 
+    def upload_report_from_bytes(self, file_bytes: bytes, bucket_name: str,
+                                 remote_file_name: str) -> bool:
+        """
+        Upload file from bytes to Carrier storage.
+        This is a wrapper that uses the existing upload_file method.
+        """
+        import tempfile
+        import os
+
+        temp_dir = tempfile.mkdtemp()
+        temp_file_path = os.path.join(temp_dir, remote_file_name)
+
+        try:
+            with open(temp_file_path, 'wb') as f:
+                f.write(file_bytes)
+            print(temp_file_path)
+            from time import sleep
+            sleep(30)
+            success = self.upload_file(
+                bucket_name=bucket_name,
+                file_name=temp_file_path
+            )
+            return success
+
+        finally:
+            import shutil
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
     def get_locations(self) -> Dict[str, Any]:
         return self._api_call('get_locations')
 
