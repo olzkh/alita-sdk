@@ -268,17 +268,13 @@ class ComparisonExcelTransformer(BaseTransformer):
             from alita_sdk.tools.carrier.etl.reporting.core.data_models import PerformanceAnalysisResult
             from alita_sdk.tools.carrier.utils.prompts import build_enhanced_comparison_prompt
 
-            # --- THE FINAL FIX IS HERE ---
-            # 1. Prepare the data for the prompt builder.
             reports_data_for_prompt = [
                 {"description": f"Report from {r.summary.date_start}", "content": r.summary.to_legacy_dict()}
                 for r in reports
             ]
 
-            # 2. Call the centralized prompt builder.
             analysis_request = build_enhanced_comparison_prompt(reports_data_for_prompt, context)
 
-            # 3. Use the new, direct data extraction method.
             intent_extractor = CarrierIntentExtractor(llm=llm)
             logger.info("Extracting performance comparison analysis using direct structured data method.")
 

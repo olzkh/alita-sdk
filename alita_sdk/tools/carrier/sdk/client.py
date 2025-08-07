@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 from .data_models import CarrierCredentials
 from .endpoints import _EndpointManager
 from .exceptions import CarrierAPIError
-from ..utils.utils import get_latest_log_file
+from alita_sdk.tools.carrier.utils.utils import get_latest_log_file
 
 logger = logging.getLogger("carrier_sdk.client")
 

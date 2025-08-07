@@ -1,14 +1,18 @@
 import io
 import os
 import logging
-from typing import Dict, Any, Optional
 from datetime import datetime
-
+from typing import Dict, Any
+from langchain_core.tools import ToolException
+import zipfile
 from ..etl_pipeline import BaseLoader
+from ..reporting.core.chart_builder import ChartBuilder
 from ..reporting.core.data_models import PerformanceReport
 from ..reporting.backend_excel_reporter import ExcelReporter
-from langchain_core.tools import ToolException
-from alita_sdk.tools.carrier.utils.utils import CarrierArtifactUploader
+from ..reporting.core.markdown_builder import MarkdownReportBuilder
+from ..reporting.backend_excel_reporter import ComparisonReporter
+
+from ...utils.utils import CarrierArtifactUploader, DateTimeUtils
 
 
 class CarrierExcelLoader(BaseLoader):
@@ -116,7 +120,6 @@ class CarrierExcelLoader(BaseLoader):
         Generates the artifact download URL using the same logic as CarrierExcelLoader.
         """
         try:
-            # This logic is copied from the working CarrierExcelLoader
             if hasattr(api_wrapper, 'carrier_client'):
                 project_id = api_wrapper.carrier_client.credentials.project_id
                 base_url = api_wrapper.carrier_client.credentials.url.rstrip('/')
@@ -160,299 +163,172 @@ class CarrierDocxLoader(BaseLoader):
         raise NotImplementedError("DOCX loading not implemented yet")
 
 
-import zipfile
-from openpyxl.formatting.formatting import ConditionalFormattingList
-
-from openpyxl import Workbook, load_workbook
-from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.styles import PatternFill, Side, Alignment, Border
-from openpyxl.formatting.rule import CellIsRule
-from copy import copy
-
-class ComparisonExcelLoader(BaseLoader):
+class ComparisonExcelLoader:
     """
-    A stateful loader that manages a persistent, consolidated comparison report.
-    This version includes the full logic to build the interactive dashboard.
+    Orchestrates the generation of a complete comparison package (ZIP),
+    including an interactive Excel report, markdown analysis, and charts.
     """
 
     def __init__(self, history_limit: int = 20):
-        super().__init__()
         self.logger = logging.getLogger(__name__)
         self.history_limit = history_limit
-        self.reporter = ExcelReporter()
+        self.reporter = ComparisonReporter()
+        self.markdown_builder = MarkdownReportBuilder()
+        self.chart_builder = ChartBuilder()
+        self.uploader = None
+
+    def _generate_specific_charts(self, chart_data: Dict[str, Any]) -> Dict[str, bytes]:
+        """
+        Generates all required charts by calling specific methods on the ChartBuilder.
+        This avoids assuming a generic 'generate_all_charts' method.
+        """
+        self.logger.info("Generating specific performance charts...")
+        chart_files = {}
+
+        # 1. Generate the Performance Trend Chart
+        try:
+            trend_buffer = io.BytesIO()
+            if self.chart_builder.create_performance_trend_chart(chart_data, trend_buffer):
+                trend_buffer.seek(0)
+                chart_files['performance_trends.png'] = trend_buffer.getvalue()
+                self.logger.info("Successfully generated 'performance_trends.png'.")
+            else:
+                self.logger.warning("Performance trend chart could not be generated (check data).")
+        except Exception as e:
+            self.logger.error(f"Failed to create performance trend chart: {e}", exc_info=True)
+
+        # 2. Generate the Side-by-Side Comparison Chart
+        try:
+            comparison_buffer = io.BytesIO()
+            if self.chart_builder.create_comparison_chart(chart_data, comparison_buffer):
+                comparison_buffer.seek(0)
+                chart_files['test_comparison.png'] = comparison_buffer.getvalue()
+                self.logger.info("Successfully generated 'test_comparison.png'.")
+            else:
+                self.logger.warning("Test comparison chart could not be generated (check data).")
+        except Exception as e:
+            self.logger.error(f"Failed to create test comparison chart: {e}", exc_info=True)
+
+        self.logger.info(f"Finished chart generation. Total charts created: {len(chart_files)}.")
+        return chart_files
 
     def load(self, transformed_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        self.logger.info("Starting stateful comparison loading process...")
+        """
+        Main entry point to generate, package, and upload the comparison report.
+        """
+        self.logger.info("Orchestrating comparison report package generation...")
         api_wrapper = context["api_wrapper"]
+        self.uploader = CarrierArtifactUploader(api_wrapper)
         test_name = context.get("test_name", "default_test")
-        zip_report_name = f"consolidated_comparison_{test_name}.zip"
         bucket_name = context.get("comparison_bucket", "performance-comparisons")
-        try:
-            excel_workbook, _ = self._get_or_create_consolidated_workbook(api_wrapper, bucket_name,
-                                                                          f"consolidated_comparison_{test_name}.xlsx")
-            for report in transformed_data.get("all_reports", []):
-                sheet_name = self._add_report_as_hidden_sheet(excel_workbook, report)
-                self._update_tests_index(excel_workbook, sheet_name, report)
-            self._prune_old_reports(excel_workbook)
-            self._rebuild_comparison_dashboard(excel_workbook)
-            ai_analysis_md = self._create_ai_analysis_markdown(transformed_data.get("comparison_analysis"))
-            download_url = self._create_and_upload_zip_archive(api_wrapper, excel_workbook, ai_analysis_md, bucket_name,
-                                                               zip_report_name)
-            self.logger.info("Consolidated ZIP archive successfully created and uploaded.")
-            return {"status": "success",
-                    "message": "Consolidated comparison report and AI analysis ZIP archive created successfully.",
-                    "download_url": download_url}
-        except Exception as e:
-            self.logger.error(f"Stateful comparison loading failed: {e}", exc_info=True)
-            return {"status": "error", "error": str(e)}
 
-    def _fill_header(self, ws, row, col, value, color="BFBFBF", merge_cols=0):
-        """Helper to fill and style a header cell."""
-        cell = ws.cell(row=row, column=col)
-        cell.value = value
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        cell.fill = PatternFill("solid", fgColor=color)
-        border_style = Side(border_style="thin", color="040404")
-        cell.border = Border(top=border_style, left=border_style, right=border_style, bottom=border_style)
-        if merge_cols > 0:
-            ws.merge_cells(start_row=row, start_column=col, end_row=row, end_column=col + merge_cols)
+        # 1. Generate Excel Workbook Object, including AI analysis
+        reports = transformed_data.get("all_reports", [])
+        ai_analysis = transformed_data.get("comparison_analysis")
+        workbook_obj = self.reporter.generate_comparison_workbook(reports, ai_analysis)
 
-    def _set_cell_formula(self, ws, row, col, formula):
-        """Helper to set a formula and style a data cell."""
-        cell = ws.cell(row=row, column=col)
-        cell.value = formula
-        border_style = Side(border_style="thin", color="040404")
-        cell.border = Border(top=border_style, left=border_style, right=border_style, bottom=border_style)
+        excel_buffer = io.BytesIO()
+        workbook_obj.save(excel_buffer)
+        excel_bytes = excel_buffer.getvalue()
 
-    def _apply_conditional_formatting(self, ws, cell_range, low_threshold, high_threshold):
-        """Helper to apply standard conditional formatting."""
-        green_fill = PatternFill(start_color="90EE90", end_color="90EE90", fill_type='solid')
-        yellow_fill = PatternFill(start_color="FFFFE0", end_color="FFFFE0", fill_type='solid')
-        red_fill = PatternFill(start_color="FFB6C1", end_color="FFB6C1", fill_type='solid')
-        ws.conditional_formatting.add(cell_range,
-                                      CellIsRule(operator='between', formula=[low_threshold, high_threshold],
-                                                 fill=yellow_fill))
-        ws.conditional_formatting.add(cell_range,
-                                      CellIsRule(operator='lessThanOrEqual', formula=[low_threshold], fill=green_fill))
-        ws.conditional_formatting.add(cell_range,
-                                      CellIsRule(operator='greaterThan', formula=[high_threshold], fill=red_fill))
+        # 2. Generate Markdown Content
+        markdown_content = self.markdown_builder.generate_markdown_content(transformed_data)
 
-    def _rebuild_comparison_dashboard(self, wb: Workbook):
-        """Re-creates the dynamic comparison sheet using formulas, porting all legacy logic."""
-        self.logger.info("Rebuilding full dynamic comparison dashboard...")
-        comparison_ws = wb["Comparison"]
-        tests_ws = wb["tests"]
+        # 3. Generate Charts
+        chart_data = self._extract_chart_data(transformed_data)
+        charts = self._generate_specific_charts(chart_data)
 
-        comparison_ws.delete_rows(1, comparison_ws.max_row + 1)
-        comparison_ws.conditional_formatting = ConditionalFormattingList()
+        # 4. Create ZIP Package
+        zip_filename = f"comparison_{test_name}_{DateTimeUtils.get_current_timestamp()}.zip"
+        zip_bytes = self._create_zip_package(excel_bytes, markdown_content, charts, test_name)
 
-        if tests_ws.max_row < 2:
-            comparison_ws[
-                "A1"] = "Not enough reports in history to build a comparison. Please run at least one more test."
-            self.logger.warning("Not enough reports to build a comparison dashboard. Need at least 2.")
-            return
+        # 5. Upload ZIP
+        upload_success = self.uploader.upload(bucket_name, zip_filename, zip_bytes)
+        if not upload_success:
+            raise ToolException(f"Failed to upload ZIP package to {bucket_name}")
 
-        # 1. Setup Dropdowns
-        data_val = DataValidation(type="list", formula1='=tests!A:A')
-        comparison_ws.add_data_validation(data_val)
-        data_val.add(comparison_ws["H1"])
-        data_val.add(comparison_ws["H2"])
-        comparison_ws["H1"] = tests_ws.cell(row=tests_ws.max_row - 1, column=1).value
-        comparison_ws["H2"] = tests_ws.cell(row=tests_ws.max_row, column=1).value
-        comparison_ws.cell(row=1, column=8).fill = PatternFill("solid", fgColor="DDEBF7")
-        comparison_ws.cell(row=2, column=8).fill = PatternFill("solid", fgColor="DDEBF7")
+        # 6. Generate and return final result
+        download_url = self.uploader.generate_download_url(bucket_name, zip_filename)
+        print(download_url)
+        return {
+            "status": "success",
+            "message": "Comparison package created and uploaded successfully.",
+            "download_url": download_url,
+        }
 
-        # 2. Build Header Section
-        headers = ["Users", "Ramp up, sec", "Duration, min", "Think time, sec", "Start Date, BST", "End Date, BST",
-                   "Throughput, req/sec", "Error rate, %"]
-        for i, header in enumerate(headers, 1):
-            comparison_ws.cell(row=i + 3, column=1).value = header
-            self._set_cell_formula(comparison_ws, row=i + 3, col=2,
-                                   formula=f'=IFERROR(VLOOKUP("{header}", INDIRECT("\'"&$H$1&"\'!A:B"), 2, FALSE), "N/A")')
-            self._set_cell_formula(comparison_ws, row=i + 3, col=4,
-                                   formula=f'=IFERROR(VLOOKUP("{header}", INDIRECT("\'"&$H$2&"\'!A:B"), 2, FALSE), "N/A")')
-
-        # 3. Build Main Table Headers
-        table_start_row = len(headers) + 6
-        header_row = table_start_row - 1
-        self._fill_header(comparison_ws, header_row, 1, "Transaction")
-        self._fill_header(comparison_ws, header_row, 2, "Req. count", merge_cols=1)
-        self._fill_header(comparison_ws, header_row, 5, "KO, count", merge_cols=1)
-        self._fill_header(comparison_ws, header_row, 8, "Min, sec", merge_cols=1)
-        self._fill_header(comparison_ws, header_row, 11, "Avg, sec", merge_cols=1)
-        self._fill_header(comparison_ws, header_row, 14, "90p, sec", merge_cols=1)
-        self._fill_header(comparison_ws, header_row, 17, "Difference, 90 pct", merge_cols=1)
-        self._fill_header(comparison_ws, header_row, 20, "Max, sec", merge_cols=1)
-
-        for col in [2, 5, 8, 11, 14, 20]: self._fill_header(comparison_ws, table_start_row, col, "test1", "D9EAD3")
-        for col in [3, 6, 9, 12, 15, 21]: self._fill_header(comparison_ws, table_start_row, col, "test2", "D9EAD3")
-        self._fill_header(comparison_ws, table_start_row, 17, "Diff, sec", "D9EAD3")
-        self._fill_header(comparison_ws, table_start_row, 18, "Diff, %", "D9EAD3")
-
-        # 4. Populate Transaction Names
-        all_transactions = set()
-        for i in range(1, tests_ws.max_row + 1):
-            sheet_name = tests_ws.cell(row=i, column=1).value
-            if sheet_name and sheet_name in wb.sheetnames:
-                sheet = wb[sheet_name]
-                for row in range(13, sheet.max_row + 1):
-                    if sheet.cell(row=row, column=1).value:
-                        all_transactions.add(sheet.cell(row=row, column=1).value)
-
-        current_row = table_start_row + 1
-        for tx_name in sorted(list(all_transactions)):
-            comparison_ws.cell(row=current_row, column=1).value = tx_name
-            current_row += 1
-
-        # 5. Populate Table with Formulas
-        for r in range(table_start_row + 1, comparison_ws.max_row + 1):
-            tx_name_cell = f"$A{r}"
-            # Req Count, KO Count
-            for i, col_idx in enumerate([2, 3], start=2):
-                self._set_cell_formula(comparison_ws, r, i,
-                                       f'=IFERROR(VLOOKUP({tx_name_cell},INDIRECT("\'"&$H$1&"\'!A:J"),{col_idx},FALSE),0)')
-                self._set_cell_formula(comparison_ws, r, i + 3,
-                                       f'=IFERROR(VLOOKUP({tx_name_cell},INDIRECT("\'"&$H$2&"\'!A:J"),{col_idx},FALSE),0)')
-            # Min, Avg, 90p, Max
-            for i, col_idx in enumerate([5, 6, 7, 9], start=8):
-                self._set_cell_formula(comparison_ws, r, i,
-                                       f'=IFERROR(VLOOKUP({tx_name_cell},INDIRECT("\'"&$H$1&"\'!A:J"),{col_idx},FALSE),0)')
-                self._set_cell_formula(comparison_ws, r, i + 1,
-                                       f'=IFERROR(VLOOKUP({tx_name_cell},INDIRECT("\'"&$H$2&"\'!A:J"),{col_idx},FALSE),0)')
-            # Difference formulas
-            self._set_cell_formula(comparison_ws, r, 17, f'=O{r}-N{r}')
-            comparison_ws.cell(row=r, column=17).number_format = '0.00'
-            self._set_cell_formula(comparison_ws, r, 18, f'=IFERROR((O{r}-N{r})/N{r}, 0)')
-            comparison_ws.cell(row=r, column=18).number_format = '0.00%'
-
-        # 6. Apply Conditional Formatting
-        last_data_row = comparison_ws.max_row
-        if last_data_row > table_start_row:
-            self._apply_conditional_formatting(comparison_ws, f"R{table_start_row + 1}:R{last_data_row}", 0.1, 0.2)
-            self._apply_conditional_formatting(comparison_ws, f"O{table_start_row + 1}:O{last_data_row}", 1.0, 2.0)
-
-        self.logger.info("Dashboard has been fully rebuilt with headers, data, and formulas.")
-
-    # ... (The other helper methods: _get_or_create_consolidated_workbook, etc., remain the same) ...
-    def _get_or_create_consolidated_workbook(self, api: Any, bucket: str, name: str) -> (Workbook, bool):
-        try:
-            self.logger.info(f"Attempting to download existing consolidated report: {name}")
-            file_content = api.download_artifact(bucket, name)
-            return load_workbook(filename=io.BytesIO(file_content)), False
-        except Exception:
-            self.logger.warning(f"Consolidated report not found. Creating a new one.")
-            workbook = Workbook();
-            workbook.active.title = "Comparison";
-            workbook.create_sheet("tests")
-            if "Sheet" in workbook.sheetnames: workbook.remove(workbook["Sheet"])
-            return workbook, True
-
-    def _add_report_as_hidden_sheet(self, wb: Workbook, report: PerformanceReport) -> str:
-        date_obj = self._to_datetime_from_str(report.summary.date_start)
-        sheet_name = f"{report.summary.max_user_count}vu_{date_obj.strftime('%Y%m%d_%H%M')}"
-        self.logger.info(f"Adding new hidden sheet: {sheet_name}")
-        single_report_wb = self.reporter.generate_workbook(report);
-        source_ws = single_report_wb.active
-        new_ws = wb.create_sheet(title=sheet_name)
-        for row in source_ws.iter_rows():
-            for cell in row:
-                new_cell = new_ws.cell(row=cell.row, column=cell.column, value=cell.value)
-                if cell.has_style:
-                    new_cell.font, new_cell.border, new_cell.fill, new_cell.number_format, new_cell.alignment = \
-                        copy(cell.font), copy(cell.border), copy(cell.fill), copy(cell.number_format), copy(
-                            cell.alignment)
-        new_ws.sheet_state = 'hidden'
-        return sheet_name
-
-    def _update_tests_index(self, wb: Workbook, sheet_name: str, report: PerformanceReport):
-        tests_ws = wb["tests"];
-        description = f"{report.test_name} - {report.summary.date_start}"
-        tests_ws.append([sheet_name, description]);
-        self.logger.info(f"Updated 'tests' index with: {sheet_name}")
-
-    def _prune_old_reports(self, wb: Workbook):
-        tests_ws = wb["tests"]
-        while tests_ws.max_row > self.history_limit:
-            sheet_to_remove = tests_ws.cell(row=1, column=1).value
-            self.logger.info(
-                f"History limit ({self.history_limit}) exceeded. Removing oldest report sheet: {sheet_to_remove}")
-            if sheet_to_remove in wb.sheetnames: wb.remove(wb[sheet_to_remove])
-            tests_ws.delete_rows(1)
-
-    def _create_ai_analysis_markdown(self, analysis: Optional[Any]) -> str:
-        """Formats the AI analysis object into a readable markdown string."""
-        if not analysis or not hasattr(analysis, 'summary'):
-            return "# AI Performance Analysis\n\nAI analysis was not available or failed to generate for this comparison."
-
-        md = f"# AI Performance Analysis\n\n"
-        md += f"## Overall Summary\n\n{analysis.summary}\n\n"
-
-        if hasattr(analysis, 'key_findings') and analysis.key_findings:
-            md += "## Key Findings\n\n"
-            for finding in analysis.key_findings:
-                md += f"- {finding}\n"
-
-        if hasattr(analysis, 'recommendations') and analysis.recommendations:
-            md += "\n## Recommendations\n\n"
-            for recommendation in analysis.recommendations:
-                md += f"- {recommendation}\n"
-
-        if hasattr(analysis, 'performance_trends') and analysis.performance_trends:
-            md += "\n## Performance Trends\n\n"
-            for trend_key, trend_value in analysis.performance_trends.items():
-                formatted_key = trend_key.replace('_', ' ').title()
-                md += f"- **{formatted_key}**: {trend_value}\n"
-
-        if hasattr(analysis, 'risk_assessment') and analysis.risk_assessment:
-            md += "\n## Risk Assessment\n\n"
-            overall_risk = analysis.risk_assessment.get('overall_risk', 'Unknown')
-            md += f"- **Overall Risk Level**: {overall_risk.upper()}\n"
-
-            if 'risk_factors' in analysis.risk_assessment:
-                md += "\n### Risk Factors\n"
-                for factor in analysis.risk_assessment.get('risk_factors', []):
-                    md += f"- {factor}\n"
-
-        if hasattr(analysis, 'confidence_score'):
-            md += f"\n---\n*Analysis Confidence Score: {analysis.confidence_score:.0%}*\n"
-
-        return md
-
-    def _create_and_upload_zip_archive(self, api: Any, excel_wb: Workbook, md_content: str, bucket: str,
-                                       zip_name: str) -> str:
-        self.logger.info(f"Creating in-memory ZIP archive: {zip_name}")
-        zip_buffer = io.BytesIO();
-        excel_buffer = io.BytesIO();
-        excel_wb.save(excel_buffer)
-        excel_filename = zip_name.replace(".zip", ".xlsx");
-        md_filename = zip_name.replace(".zip", "_analysis.md")
+    def _create_zip_package(self, excel_bytes: bytes, md_content: str, charts: Dict[str, bytes],
+                            test_name: str) -> bytes:
+        """Packages all artifacts into a single ZIP file."""
+        zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(excel_filename, excel_buffer.getvalue());
-            zf.writestr(md_filename, md_content.encode('utf-8'))
-        zip_bytes = zip_buffer.getvalue();
-        self.logger.info(f"In-memory ZIP archive created ({len(zip_bytes)} bytes). Uploading...")
-        api.upload_report_from_bytes(zip_bytes, bucket, zip_name)
-        return self._generate_download_link(api, bucket, zip_name)
+            zf.writestr(f"{test_name}_report.xlsx", excel_bytes)
+            zf.writestr("analysis.md", md_content.encode('utf-8'))
+            for filename, chart_bytes in charts.items():
+                zf.writestr(f"charts/{filename}", chart_bytes)
+        return zip_buffer.getvalue()
 
-    def _generate_download_link(self, api_wrapper, bucket_name: str, file_name: str) -> str:
-        try:
-            if hasattr(api_wrapper, 'carrier_client'):
-                project_id = api_wrapper.carrier_client.credentials.project_id;
-                base_url = api_wrapper.carrier_client.credentials.url.rstrip('/')
-            else:
-                project_id = api_wrapper._client.credentials.project_id;
-                base_url = api_wrapper._client.credentials.url.rstrip('/')
-            download_url = f"{base_url}/api/v1/artifacts/artifact/default/{project_id}/{bucket_name}/{file_name}?integration_id=1&is_local=False"
-            self.logger.info(f"Successfully generated download link: {download_url}");
-            return download_url
-        except Exception as e:
-            self.logger.warning(f"Could not generate download link: {e}. Providing manual access info.")
-            return f"Upload successful. Access file '{file_name}' in bucket '{bucket_name}'."
+    def _extract_chart_data(self, transformed_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extracts and transforms performance data into the precise structure
+        required by the ChartBuilder. This method acts as an adapter between
+        the PerformanceReport data model and the visualization module.
+        """
+        self.logger.info("Extracting and transforming data for chart generation...")
+        all_reports = transformed_data.get("all_reports", [])
+        if not all_reports:
+            self.logger.warning("No reports found in transformed_data to extract chart data from.")
+            return {}
 
-    def _to_datetime_from_str(self, date_str: str) -> datetime:
-        try:
-            return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
-        except (ValueError, TypeError):
-            self.logger.warning(
-                f"Could not parse date string '{date_str}'. Falling back to current time.");
-            return datetime.now()
+        chart_data = {}
+        for i, report in enumerate(all_reports):
+            summary = getattr(report, 'summary', None)
+            if not summary:
+                self.logger.warning(f"Skipping report {i} for chart data due to missing summary.")
+                continue
+
+            # Generate a unique and descriptive key for this report run
+            report_key = self._generate_report_key(report)
+
+            # Map the PerformanceReport data to the flat structure ChartBuilder expects
+            chart_data[report_key] = {
+                # Timestamp for sorting chronologically
+                'timestamp': summary.date_start,
+
+                # Top-level summary metrics required by the trend chart
+                'throughput': getattr(summary, 'throughput', 0.0),
+                'error_rate': getattr(summary, 'error_rate', 0.0),
+                # The chart expects response times in seconds, so we convert from ms
+                'avg_response_time': getattr(report.transactions.get("Total", object()), 'avg', 0.0) / 1000.0,
+                'p90_response_time': getattr(report.transactions.get("Total", object()), 'pct90', 0.0) / 1000.0,
+
+                # Detailed transaction data required by the comparison chart
+                'transactions': self._extract_transaction_chart_data(report.transactions)
+            }
+
+        self.logger.info(f"Successfully extracted chart data for {len(chart_data)} reports.")
+        return chart_data
+
+    def _generate_report_key(self, report: PerformanceReport) -> str:
+        """
+        Generates a unique, human-readable key for a report to be used in charts.
+        This is independent of the Excel sheet naming logic.
+        """
+        summary = report.summary
+        date_obj = DateTimeUtils.parse_datetime(summary.date_start)
+        # Use a concise format for chart labels
+        return f"Run_{date_obj.strftime('%m-%d_%H:%M')}"
+
+    def _extract_transaction_chart_data(self, transactions: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+        """
+        Extracts and maps transaction data to the structure expected by the
+        comparison chart, converting metrics to the correct units (seconds).
+        """
+        tx_chart_data = {}
+        for tx_name, metrics in transactions.items():
+            if tx_name == "Total": continue
+            tx_chart_data[tx_name] = {
+                'avg_response_time': getattr(metrics, 'avg', 0.0) / 1000.0,
+                'p90_response_time': getattr(metrics, 'pct90', 0.0) / 1000.0,
+                'error_rate': getattr(metrics, 'error_rate', 0.0)
+            }
+        return tx_chart_data

@@ -17,6 +17,18 @@ from alita_sdk.tools.carrier.utils.utils import CarrierArtifactUploader
 logger = logging.getLogger(__name__)
 
 
+def _generate_download_link(api_wrapper, bucket_name: str, file_name: str) -> str:
+    """
+    Generate download URL using same pattern as Backend loader.
+    """
+    project_id = api_wrapper._client.credentials.project_id
+    base_url = api_wrapper._client.credentials.url.rstrip('/')
+
+    download_url = f"{base_url}/api/v1/artifacts/artifact/default/{project_id}/{bucket_name}/{file_name}?integration_id=1&is_local=False"
+    logger.info(f"Generated UI ZIP download link: {download_url}")
+    return download_url
+
+
 class CarrierUIExcelLoader(BaseLoader):
     """
     UI Excel loader that works with the new UITransformResult objects.
@@ -61,7 +73,7 @@ class CarrierUIExcelLoader(BaseLoader):
 
         # Generate download link
         zip_file_name = f"{os.path.splitext(file_name)[0]}.zip"
-        download_url = self._generate_download_link(api_wrapper, bucket_name, zip_file_name)
+        download_url = _generate_download_link(api_wrapper, bucket_name, zip_file_name)
 
         logger.info("UI loading completed successfully")
 
@@ -82,7 +94,8 @@ class CarrierUIExcelLoader(BaseLoader):
             }
         }
 
-    def _get_upload_details(self, transformed_data) -> tuple[str, str]:
+    @staticmethod
+    def _get_upload_details(transformed_data) -> tuple[str, str]:
         """Extract upload details from transformed data."""
         if not transformed_data.report_name:
             raise ToolException("Report name is required for upload")
@@ -93,14 +106,3 @@ class CarrierUIExcelLoader(BaseLoader):
         bucket_name = report_name.replace("_", "").replace(" ", "").lower()
         file_name = f"ui_excel_report_{transformed_data.report_id}.xlsx"
         return bucket_name, file_name
-
-    def _generate_download_link(self, api_wrapper, bucket_name: str, file_name: str) -> str:
-        """
-        Generate download URL using same pattern as Backend loader.
-        """
-        project_id = api_wrapper._client.credentials.project_id
-        base_url = api_wrapper._client.credentials.url.rstrip('/')
-
-        download_url = f"{base_url}/api/v1/artifacts/artifact/default/{project_id}/{bucket_name}/{file_name}?integration_id=1&is_local=False"
-        logger.info(f"Generated UI ZIP download link: {download_url}")
-        return download_url

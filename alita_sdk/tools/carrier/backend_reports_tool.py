@@ -670,7 +670,7 @@ class GetReportByIDTool(BaseCarrierTool):
 - **Total Requests:** {metrics.get('total_requests', 'N/A')}
 - **Success Rate:** {metrics.get('success_rate', 'N/A')}%
 - **Average Response Time:** {metrics.get('avg_response_time', 'N/A')} ms
-- **95th Percentile:** {metrics.get('p95_response_time', 'N/A')} ms
+- **95th Percentile:** {metrics.get('pct95', 'N/A')} ms
 - **Throughput:** {metrics.get('throughput', 'N/A')} req/s
 """
 

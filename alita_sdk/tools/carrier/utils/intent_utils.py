@@ -76,7 +76,7 @@ class CarrierIntentExtractor:
             'successful_extractions': 0,
             'disambiguation_requests': 0,
             'failed_extractions': 0,
-            'average_response_time': 0.0
+            'avg': 0.0
         }
 
     def _create_structured_llm(self):
@@ -311,10 +311,10 @@ class CarrierIntentExtractor:
         if intent.needs_clarification():
             self.metrics['disambiguation_requests'] += 1
 
-        # Update average response time
+        # Update avg response time
         total_success = self.metrics['successful_extractions']
-        current_avg = self.metrics['average_response_time']
-        self.metrics['average_response_time'] = ((current_avg * (total_success - 1)) + response_time) / total_success
+        current_avg = self.metrics['avg']
+        self.metrics['avg'] = ((current_avg * (total_success - 1)) + response_time) / total_success
 
     def get_metrics_summary(self) -> Dict[str, Any]:
         """
@@ -336,7 +336,7 @@ class CarrierIntentExtractor:
             'successful_extractions': 0,
             'disambiguation_requests': 0,
             'failed_extractions': 0,
-            'average_response_time': 0.0
+            'avg': 0.0
         }
 
 

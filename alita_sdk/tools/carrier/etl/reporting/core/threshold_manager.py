@@ -58,7 +58,7 @@ class ThresholdManager:
             "response_time": user_args.get("rt_threshold", user_args.get("response_time_threshold")),
             "error_rate": user_args.get("er_threshold", user_args.get("error_rate_threshold")),
             "throughput": user_args.get("tp_threshold", user_args.get("throughput_threshold")),
-            "p95_response_time": user_args.get("p95_threshold", user_args.get("p95_response_time_threshold"))
+            "pct95": user_args.get("p95_threshold", user_args.get("pct95_threshold"))
         }
 
         # Apply non-None user overrides

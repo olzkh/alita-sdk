@@ -118,9 +118,6 @@ class CarrierAPIWrapper(BaseModel):
         try:
             with open(temp_file_path, 'wb') as f:
                 f.write(file_bytes)
-            print(temp_file_path)
-            from time import sleep
-            sleep(30)
             success = self.upload_file(
                 bucket_name=bucket_name,
                 file_name=temp_file_path

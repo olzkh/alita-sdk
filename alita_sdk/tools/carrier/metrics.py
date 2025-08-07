@@ -72,7 +72,7 @@ class ToolkitMetrics:
             'failed_tool_calls': self.failed_tool_calls,
             'fallback_activations': self.fallback_activations,
             'parameter_extraction_errors': self.parameter_extraction_errors,
-            'average_execution_time': (self.total_execution_time / self.successful_tool_calls
+            'avg_execution_time': (self.total_execution_time / self.successful_tool_calls
                                      if self.successful_tool_calls > 0 else 0.0),
             'top_actions': dict(sorted(self.action_counts.items(),
                                      key=lambda x: x[1], reverse=True)[:10])

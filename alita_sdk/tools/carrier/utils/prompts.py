@@ -432,7 +432,7 @@ def build_enhanced_comparison_prompt(reports_data: List[Dict], context: Dict) ->
             f"  - Duration: {report['content'].get('duration', 'N/A')} minutes\n"
             f"  - Max Users: {report['content'].get('max_user_count', 'N/A')}\n"
             f"  - Throughput: {report['content'].get('throughput', 'N/A')} req/s\n"
-            f"  - Avg Response Time: {report['content'].get('average', 'N/A')} ms\n"
+            f"  - Avg Response Time: {report['content'].get('avg', 'N/A')} ms\n"
             f"  - 90th Percentile: {report['content'].get('pct90', 'N/A')} ms\n"
             f"  - 95th Percentile: {report['content'].get('pct95', 'N/A')} ms\n"
             f"  - Error Rate: {report['content'].get('error_rate', 'N/A')}%\n"

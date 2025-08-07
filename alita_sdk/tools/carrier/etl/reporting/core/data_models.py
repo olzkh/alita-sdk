@@ -1,17 +1,17 @@
 """
-Core data models - Pure data structures only.
-No business logic, configuration, or analysis results.
-
+Core data models - data structures only.
 Author: Karen Florykian
 """
-
-from datetime import date, timedelta
 from enum import Enum
-from pydantic import Field
-from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any
-from datetime import datetime
+from dataclasses import dataclass, field
 import logging
+
+from pydantic import Field
+from langchain_core.pydantic_v1 import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 # ================== ENUMS ==================
@@ -20,6 +20,7 @@ class PerformanceStatus(Enum):
     PASSED = "PASSED"
     FAILED = "FAILED"
     WARNING = "WARNING"
+    UNKNOWN = "UNKNOWN"
 
 
 class PerformanceDirection(Enum):
@@ -31,122 +32,138 @@ class PerformanceDirection(Enum):
     MISSING = "⚪ Missing"
 
 
-logger = logging.getLogger(__name__)
+class ThresholdCondition(str, Enum):
+    """Enumeration for threshold comparison operators."""
+    LESS_THAN = "less_than"
+    GREATER_THAN = "greater_than"
+    EQUALS = "equals"
+
+
+class ReportType(Enum):
+    """Report type enumeration for type safety"""
+    BASELINE = "baseline"
+    COMPARISON = "comparison"
+    UI_PERFORMANCE = "ui_performance"
+    BACKEND = "backend"
+    MOBILE = "mobile"
+    GATLING = "GATLING"
+    JMETER = "JMETER"
+
+
+# ================== CONFIGURATION MODELS ==================
+@dataclass
+class ThresholdConfig:
+    """Unified threshold configuration."""
+    target: str
+    threshold_value: float
+    condition: ThresholdCondition = ThresholdCondition.LESS_THAN
+
+    def is_violated(self, actual_value: float) -> bool:
+        """Check if threshold is violated."""
+        if self.condition == ThresholdCondition.LESS_THAN:
+            return actual_value >= self.threshold_value
+        elif self.condition == ThresholdCondition.GREATER_THAN:
+            return actual_value <= self.threshold_value
+        else:
+            return abs(actual_value - self.threshold_value) > 0.001
+
+# ================== ANALYSIS MODELS ==================
+@dataclass
+class Recommendation:
+    """Performance recommendation with priority and details."""
+    priority: str  # High, Medium, Low
+    action: str
+    details: str
+    category: str = "Performance"
+
+
+@dataclass
+class AnalysisResult:
+    """Results of performance analysis."""
+    status: PerformanceStatus
+    justification: str
+    failed_metrics: List[str]
+    recommendations: List[Recommendation]
+    summary_stats: Dict[str, Any]
+    confidence_score: float = 0.8
+
+
+@dataclass(frozen=True)
+class ComparisonResult:
+    """Results of performance comparison analysis."""
+    name: str
+    metric_name: str
+    baseline_value: float
+    current_value: float
+    absolute_change: float
+    percent_change: float
+    direction: PerformanceDirection
+    threshold_exceeded: bool = False
+
+    @property
+    def is_significant(self) -> bool:
+        """Calculate significance based on percent change."""
+        return abs(self.percent_change) >= 5.0
+
+    @property
+    def change_display(self) -> str:
+        """Formatted change percentage for display."""
+        if self.percent_change == 0:
+            return "No Change"
+        sign = "+" if self.percent_change > 0 else ""
+        return f"{sign}{self.percent_change:.1f}%"
+
+
+# ================== ETL MODELS ==================
+@dataclass
+class ETLContext:
+    """Context object for ETL pipeline operations."""
+    report_id: str
+    api_wrapper: Any
+    extraction_params: Dict[str, Any] = field(default_factory=dict)
+    transformation_params: Dict[str, Any] = field(default_factory=dict)
+    loading_params: Dict[str, Any] = field(default_factory=dict)
+
+    def get_param(self, stage: str, key: str, default: Any = None) -> Any:
+        """Get parameter for specific stage."""
+        params = getattr(self, f"{stage}_params", {})
+        return params.get(key, default)
 
 
 # ================== CORE METRICS ==================
-
-@dataclass(frozen=True)
+@dataclass
 class TransactionMetrics:
-    """
-    Immutable performance metrics for a single transaction.
-    Provides both legacy field names and modern field names for backward compatibility.
-
-    This class maintains exact legacy field structure to prevent Excel report breakage.
-    """
-    request_name: str
-    Total: int
-    KO: int
-    OK: int
+    """Core transaction performance metrics."""
+    name: str
+    samples: int
+    ko: int
+    avg: float
     min: float
     max: float
-    average: float
-    median: float
-    Error_pct: float = field(metadata={'legacy_name': 'Error%'})
-    pct_90: float = field(metadata={'legacy_name': '90Pct'})
-    pct_95: float = field(metadata={'legacy_name': '95Pct'})
+    pct90: float
+    pct95: float
+    pct99: float
+    throughput: float
+    received_kb_per_sec: float
+    sent_kb_per_sec: float
+    total: int
 
     def __post_init__(self):
-        """Validate metrics after initialization to prevent invalid data."""
-        if not self.request_name or not self.request_name.strip():
-            raise ValueError("Transaction name cannot be empty")
-
-        if self.Total < 0:
-            raise ValueError(f"Total requests cannot be negative: {self.Total}")
-
-        if self.KO < 0:
-            raise ValueError(f"KO count cannot be negative: {self.KO}")
-
-        if self.OK < 0:
-            raise ValueError(f"OK count cannot be negative: {self.OK}")
-
-        if self.Total != (self.KO + self.OK):
-            raise ValueError(f"Total ({self.Total}) must equal KO ({self.KO}) + OK ({self.OK})")
-
-        if not (0 <= self.Error_pct <= 100):
-            raise ValueError(f"Error percentage must be 0-100: {self.Error_pct}")
-
-        if self.min < 0:
-            raise ValueError(f"Min response time cannot be negative: {self.min}")
-
-        if self.max < self.min:
-            raise ValueError(f"Max ({self.max}) cannot be less than min ({self.min})")
-
-        if self.average < 0:
-            raise ValueError(f"Average response time cannot be negative: {self.average}")
-
-        logger.debug(f"Validated TransactionMetrics for {self.request_name}")
-
-    def to_legacy_dict(self) -> Dict[str, Any]:
-        """
-        Convert to exact legacy dictionary format for Excel compatibility.
-        This prevents breaking existing Excel report generation code.
-        """
-        return {
-            'request_name': self.request_name,
-            'Total': self.Total,
-            'KO': self.KO,
-            'OK': self.OK,
-            'min': self.min,
-            'max': self.max,
-            'average': self.average,
-            'median': self.median,
-            'Error%': self.Error_pct,  # Legacy field name
-            '90Pct': self.pct_90,  # Legacy field name
-            '95Pct': self.pct_95  # Legacy field name
-        }
-
-    @classmethod
-    def from_legacy_dict(cls, data: Dict[str, Any]) -> 'TransactionMetrics':
-        """
-        Create TransactionMetrics from legacy dictionary format.
-        Handles both old and new field names for seamless migration.
-        """
-        return cls(
-            request_name=data.get('request_name', 'Unknown'),
-            Total=int(data.get('Total', 0)),
-            KO=int(data.get('KO', 0)),
-            OK=int(data.get('OK', 0)),
-            min=float(data.get('min', 0.0)),
-            max=float(data.get('max', 0.0)),
-            average=float(data.get('average', 0.0)),
-            median=float(data.get('median', 0.0)),
-            Error_pct=float(data.get('Error%', 0.0)),  # Legacy field name
-            pct_90=float(data.get('90Pct', 0.0)),  # Legacy field name
-            pct_95=float(data.get('95Pct', 0.0))  # Legacy field name
-        )
+        """Validate metrics after initialization."""
+        if self.samples < 0:
+            raise ValueError(f"Samples cannot be negative: {self.samples}")
+        if self.ko > self.samples:
+            raise ValueError(f"KO count ({self.ko}) cannot exceed samples ({self.samples})")
 
     @property
-    def is_successful(self) -> bool:
-        """Helper property to check if transaction has acceptable error rate."""
-        return self.Error_pct < 5.0  # Configurable threshold
+    def error_rate(self) -> float:
+        """Calculate error rate percentage."""
+        return (self.ko / self.samples * 100) if self.samples > 0 else 0.0
 
     @property
-    def performance_grade(self) -> str:
-        """
-        Calculate performance grade for Excel conditional formatting.
-        This enables color-coding in Excel reports.
-        """
-        if self.Error_pct > 10:
-            return "CRITICAL"
-        elif self.Error_pct > 5:
-            return "WARNING"
-        elif self.average > 2000:  # 2 seconds
-            return "SLOW"
-        elif self.average > 1000:  # 1 second
-            return "MODERATE"
-        else:
-            return "EXCELLENT"
+    def success_rate(self) -> float:
+        """Calculate success rate percentage."""
+        return 100.0 - self.error_rate
 
 
 @dataclass(frozen=True)
@@ -155,8 +172,7 @@ class ReportSummary:
     Immutable summary metrics for the entire performance test.
     Maintains legacy field structure for Excel compatibility.
     """
-
-    # Core summary fields (legacy compatible)
+    simulation_name: str
     max_user_count: int
     ramp_up_period: float
     error_rate: float
@@ -166,7 +182,6 @@ class ReportSummary:
     duration: float
     think_time: str
 
-    # Optional enhanced fields
     baseline_throughput: Optional[float] = None
     throughput_improvement: Optional[float] = None
 
@@ -252,17 +267,31 @@ class UIMetrics:
         self.numeric_value = numeric_value
 
 
-from langchain_core.pydantic_v1 import BaseModel, Field
+# ================== PERFORMANCE REPORTS ==================
+@dataclass
+class PerformanceReport:
+    """
+    Complete performance report containing summary and transaction metrics.
+    Provides both modern object-oriented interface and legacy dictionary compatibility.
+    """
+    summary: ReportSummary
+    transactions: Dict[str, TransactionMetrics]
+    build_status: PerformanceStatus = PerformanceStatus.WARNING
+    analysis_summary: Optional[str] = None
+    carrier_report_url: str = None
+    thresholds: Optional[List[Any]] = None
+    report_type: str = "GATLING"  # or "JMETER"
+    test_name: str = "Unknown Test"
+    generated_at: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-
-class PerformanceAnalysisResult(BaseModel):
-    """Structured result from LLM performance comparison analysis."""
-    summary: str = Field(..., description="Executive summary of performance comparison")
-    key_findings: List[str] = Field(..., description="List of key findings from the comparison")
-    performance_trends: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Identified performance trends")
-    recommendations: List[str] = Field(..., description="Actionable recommendations")
-    risk_assessment: Dict[str, Any] = Field(default_factory=dict, description="Risk assessment if performance degraded")
-    confidence_score: float = Field(default=0.8, description="Confidence in the analysis (0-1)")
+    def __post_init__(self):
+        """Validate the complete report structure."""
+        if not self.transactions:
+            raise ValueError("Report must contain at least one transaction")
+        if 'Total' not in self.transactions:
+            raise ValueError("Report must contain 'Total' transaction summary")
+        logger.info(f"Validated PerformanceReport with {len(self.transactions)} transactions")
 
 
 @dataclass(frozen=True)
@@ -290,432 +319,52 @@ class UIPerformanceReport:
             raise ValueError("worksheets_data cannot be empty")
 
 
-@dataclass
-class PerformanceReport:
-    """
-    Complete performance report containing summary and transaction metrics.
-    Provides both modern object-oriented interface and legacy dictionary compatibility.
-    """
-    summary: ReportSummary
-    transactions: Dict[str, TransactionMetrics]
-    build_status: PerformanceStatus = PerformanceStatus.WARNING
-    analysis_summary: Optional[str] = None
-    carrier_report_url: str = None
-    thresholds: Optional[List[Any]] = None
-    report_type: str = "GATLING"  # or "JMETER"
-    test_name: str = "Unknown Test"
-    generated_at: datetime = field(default_factory=datetime.now)
+# ================== TICKET MODELS ==================
+class TicketPayload(BaseModel):
+    """Payload for performance test ticket creation."""
+    test_name: str = Field(..., description="Name of the performance test")
+    test_type: str = Field(..., description="Type of test (load, stress, spike, etc.)")
+    duration: int = Field(..., description="Test duration in seconds")
+    user_count: int = Field(..., description="Number of virtual users")
+    ramp_up: int = Field(..., description="Ramp-up period in seconds")
 
-    def __post_init__(self):
-        """Validate the complete report structure."""
-        if not self.transactions:
-            raise ValueError("Report must contain at least one transaction")
-        if 'Total' not in self.transactions:
-            raise ValueError("Report must contain 'Total' transaction summary")
-        logger.info(f"Validated PerformanceReport with {len(self.transactions)} transactions")
+    # Optional fields
+    scenario: Optional[str] = Field(None, description="Test scenario description")
+    environment: Optional[str] = Field("staging", description="Target environment")
+    tags: Optional[List[str]] = Field(default_factory=list, description="Test tags")
+    thresholds: Optional[List[ThresholdConfig]] = Field(default_factory=list, description="Performance thresholds")
 
-    @property
-    def excel_metadata(self) -> Dict[str, Any]:
-        """Excel formatting metadata for conditional formatting."""
-        return getattr(self, '_excel_metadata', {})
-
-    @excel_metadata.setter
-    def excel_metadata(self, value: Dict[str, Any]):
-        """Set Excel formatting metadata."""
-        object.__setattr__(self, '_excel_metadata', value)
-
-    @property
-    def comparison_metadata(self) -> Dict[str, Any]:
-        """Comparison metadata for baseline reports."""
-        return getattr(self, '_comparison_metadata', {})
-
-    @comparison_metadata.setter
-    def comparison_metadata(self, value: Dict[str, Any]):
-        """Set comparison metadata."""
-        object.__setattr__(self, '_comparison_metadata', value)
-
-    @classmethod
-    def create_from_raw_data(
-            cls,
-            transactions: Dict[str, TransactionMetrics],
-            raw_summary_data: Dict[str, Any],
-            total_transaction_key: str = "Total"
-    ) -> "PerformanceReport":
-        """
-        Factory Method (SRP): Explicitly creates a complete PerformanceReport
-        from raw data sources, handling the complex logic of summary generation.
-        This separates data creation from data representation.
-        """
-        total_metrics = transactions.get(total_transaction_key)
-        if not total_metrics:
-            raise ValueError(f"Required '{total_transaction_key}' transaction not found in transaction data.")
-
-        duration_seconds = raw_summary_data.get("duration_seconds", 0)
-        if duration_seconds <= 0:
-            raise ValueError("Test duration must be a positive number of seconds.")
-
-        summary = ReportSummary(
-            max_user_count=int(raw_summary_data.get("max_user_count", 0)),
-            ramp_up_period=float(raw_summary_data.get("ramp_up_period", 0.0)),
-            error_rate=float(raw_summary_data.get("error_rate", 0.0)),
-            date_start=str(raw_summary_data.get("date_start", "")),
-            date_end=str(raw_summary_data.get("date_end", "")),
-            throughput=float(raw_summary_data.get("throughput", 0.0)),
-            duration=float(raw_summary_data.get("duration", duration_seconds)),
-            think_time=str(raw_summary_data.get("think_time", 0.0)),
-            baseline_throughput=raw_summary_data.get("baseline_throughput"),
-            throughput_improvement=raw_summary_data.get("throughput_improvement"),
-        )
-
-        return cls(
-            summary=summary,
-            transactions=transactions,
-            build_status=PerformanceStatus(raw_summary_data.get("build_status", "WARNING")),
-            carrier_report_url=raw_summary_data.get("carrier_report_url"),
-            analysis_summary=raw_summary_data.get("analysis_summary"),
-            thresholds=raw_summary_data.get("thresholds"),
-            report_type=raw_summary_data.get("report_type", "GATLING"),
-            generated_at=raw_summary_data.get("generated_at", datetime.now()),
-        )
-
-    def to_legacy_format(self) -> Dict[str, Any]:
-        """
-        Convert entire report to legacy dictionary format.
-        This ensures existing Excel generation code continues to work unchanged.
-        """
-        legacy_dict = self.summary.to_legacy_dict()
-        legacy_dict['requests'] = {
-            name: metrics.to_legacy_dict()
-            for name, metrics in self.transactions.items()
-        }
-        return legacy_dict
-
-    @classmethod
-    def from_legacy_format(cls, data: Dict[str, Any]) -> 'PerformanceReport':
-        """Create PerformanceReport from legacy dictionary format."""
-        summary_data = {k: v for k, v in data.items() if k != 'requests'}
-        summary = ReportSummary.from_legacy_dict(summary_data)
-        transactions = {}
-        if 'requests' in data:
-            transactions = {
-                name: TransactionMetrics.from_legacy_dict(metrics)
-                for name, metrics in data['requests'].items()
+    class Config:
+        schema_extra = {
+            "example": {
+                "test_name": "API Load Test",
+                "test_type": "load",
+                "duration": 300,
+                "user_count": 100,
+                "ramp_up": 60,
+                "scenario": "Standard user journey",
+                "environment": "staging",
+                "tags": ["api", "regression"],
+                "thresholds": [
+                    {
+                        "target": "response_time_p95",
+                        "threshold_value": 1000,
+                        "condition": "less_than"
+                    }
+                ]
             }
-        return cls(summary=summary, transactions=transactions)
-
-    def get_failed_transactions(self) -> List[TransactionMetrics]:
-        """Get list of transactions with high error rates for Excel highlighting."""
-        return [
-            metrics for metrics in self.transactions.values()
-            if not metrics.is_successful
-        ]
-
-    def get_slow_transactions(self, threshold_ms: float = 2000) -> List[TransactionMetrics]:
-        """Get list of slow transactions for Excel conditional formatting."""
-        return [
-            metrics for metrics in self.transactions.values()
-            if metrics.average > threshold_ms
-        ]
-
-    def calculate_throughput_improvement(self, baseline_report: 'PerformanceReport') -> float:
-        """
-        Calculate throughput improvement vs baseline for Excel comparison reports.
-        Returns percentage improvement (positive = improvement, negative = degradation).
-        """
-        if baseline_report.summary.throughput == 0:
-            return 0.0
-        current_throughput = self.summary.throughput
-        baseline_throughput = baseline_report.summary.throughput
-        improvement = ((current_throughput - baseline_throughput) / baseline_throughput) * 100
-        return round(improvement, 2)
+        }
 
 
-# ================== FACTORY FUNCTIONS ==================
-
-def create_empty_transaction_metrics(name: str) -> TransactionMetrics:
-    """
-    Factory function to create empty transaction metrics.
-    Used when no data is available for a transaction.
-    """
-    return TransactionMetrics(
-        request_name=name,
-        Total=0,
-        KO=0,
-        OK=0,
-        min=0.0,
-        max=0.0,
-        average=0.0,
-        median=0.0,
-        Error_pct=0.0,
-        pct_90=0.0,
-        pct_95=0.0
-    )
+from langchain_core.pydantic_v1 import BaseModel, Field
 
 
-def create_transaction_metrics_from_stats(name: str, stats_dict: Dict[str, Any]) -> TransactionMetrics:
-    """
-    Factory function to create TransactionMetrics from statistics dictionary.
-    Handles both legacy and modern field names.
-    """
-    try:
-        return TransactionMetrics.from_legacy_dict({
-            'request_name': name,
-            **stats_dict
-        })
-    except Exception as e:
-        logger.error(f"Failed to create TransactionMetrics for {name}: {e}")
-        return create_empty_transaction_metrics(name)
-
-
-# ================== VALIDATION UTILITIES ==================
-
-def validate_performance_report(report: PerformanceReport) -> List[str]:
-    """
-    Comprehensive validation of performance report.
-    Returns list of validation errors for debugging.
-    """
-    errors = []
-
-    # Validate summary
-    if report.summary.throughput == 0:
-        errors.append("Zero throughput indicates no successful requests")
-
-    if report.summary.error_rate > 20:
-        errors.append(f"High error rate: {report.summary.error_rate}%")
-
-    # Validate transactions
-    if not report.transactions:
-        errors.append("No transactions found in report")
-
-    for name, metrics in report.transactions.items():
-        if metrics.Total == 0:
-            errors.append(f"Transaction '{name}' has no data")
-
-        if metrics.Error_pct > 50:
-            errors.append(f"Transaction '{name}' has high error rate: {metrics.Error_pct}%")
-
-    return errors
-
-
-@dataclass
-class TransactionAnalysis:
-    """Value object for transaction analysis results."""
-    status: str
-    severity: str
-    notes: str
-    issues: List[str]
-
-
-# ================== ANALYSIS RESULTS ==================
-
-@dataclass
-class Recommendation:
-    """Performance recommendation with priority and details."""
-    priority: str  # High, Medium, Low
-    action: str
-    details: str
-    category: str = "Performance"
-
-
-@dataclass
-class AnalysisResult:
-    """Results of performance analysis."""
-    status: PerformanceStatus
-    justification: str
-    failed_metrics: List[str]
-    recommendations: List[Recommendation]
-    summary_stats: Dict[str, Any]
-
-
-@dataclass(frozen=True)
-class ComparisonResult:
-    """Results of performance comparison analysis."""
-    transaction_name: str
-    metric_name: str
-    baseline_value: float
-    current_value: float
-    absolute_change: float
-    percent_change: float
-    direction: PerformanceDirection
-    is_significant: bool = field(init=False)
-    threshold_exceeded: bool = False
-
-    def __post_init__(self):
-        # Calculate significance based on percent change
-        object.__setattr__(self, 'is_significant', abs(self.percent_change) >= 5.0)
-
-    @property
-    def change_display(self) -> str:
-        """Formatted change percentage for display."""
-        if self.percent_change == 0:
-            return "No Change"
-        sign = "+" if self.percent_change > 0 else ""
-        return f"{sign}{self.percent_change:.1f}%"
-
-
-# ================== ETL INTEGRATION ==================
-
-@dataclass
-class ETLContext:
-    """Context object for ETL pipeline operations."""
-    report_id: str
-    api_wrapper: Any
-    extraction_params: Dict[str, Any] = field(default_factory=dict)
-    transformation_params: Dict[str, Any] = field(default_factory=dict)
-    loading_params: Dict[str, Any] = field(default_factory=dict)
-
-
-class ThresholdCondition(str, Enum):
-    """Enumeration for threshold comparison operators."""
-    LESS_THAN = "less_than"
-    GREATER_THAN = "greater_than"
-
-
-@dataclass
-class ThresholdConfig:
-    """Verify this matches what we're using in the transformer."""
-    target: str = Field(description="The metric this threshold applies to")
-    threshold_value: float = Field(description="The numeric threshold value")
-    condition: ThresholdCondition = Field(
-        default=ThresholdCondition.LESS_THAN,
-        description="The condition for success"
-    )
-
-
-# ================== EXCEL REPORT HELPERS ==================
-
-@dataclass
-class ExcelFormattingConfig:
-    """
-    Configuration for Excel conditional formatting.
-    Used by Excel report generation to apply color-coding and highlighting.
-    """
-
-    # Performance thresholds
-    error_rate_warning: float = 5.0
-    error_rate_float = 10.0
-    response_time_warning: float = 1000.0
-    response_time_float = 2000.0
-    error_rate_critical: float = 10.0
-    response_time_critical: float = 2000.0
-    throughput_warning_threshold: float = 10.0
-
-    RED_COLOR = 'F7A9A9'
-    GREEN_COLOR = 'AFF2C9'
-    YELLOW_COLOR = 'F7F7A9'
-    RED_COLOR_FONT = '00F90808'
-    GREEN_COLOR_FONT = '002BBD4D'
-
-    # Color schemes for Excel
-    excellent_color: str = f"#{GREEN_COLOR_FONT}"  # Green
-    good_color: str = f"#{GREEN_COLOR}"  # Light Green
-    warning_color: str = f"#{YELLOW_COLOR}"  # Orange
-    critical_color: str = f"#{RED_COLOR}"  # Red
-    critical_color_font: str = f"#{RED_COLOR_FONT}"  # Red
-
-    def get_color_for_error_rate(self, error_rate: float) -> str:
-        """Get Excel color code based on error rate."""
-        if error_rate >= self.error_rate_critical:
-            return self.critical_color
-        elif error_rate >= self.error_rate_warning:
-            return self.warning_color
-        else:
-            return self.excellent_color
-
-    def get_color_for_response_time(self, response_time: float) -> str:
-        """Get Excel color code based on response time."""
-        if response_time >= self.response_time_critical:
-            return self.critical_color
-        elif response_time >= self.response_time_warning:
-            return self.warning_color
-        else:
-            return self.excellent_color
-
-
-# ================== ANALYSIS RESULTS ==================
-
-@dataclass
-class AnalysisResult:
-    """Results of performance analysis."""
-    status: PerformanceStatus
-    justification: str
-    failed_metrics: List[str]
-    recommendations: List[Recommendation]
-    summary_stats: Dict[str, Any]
-
-
-@dataclass(frozen=True)
-class ComparisonResult:
-    """Results of performance comparison analysis."""
-    transaction_name: str
-    metric_name: str
-    baseline_value: float
-    current_value: float
-    absolute_change: float
-    percent_change: float
-    direction: PerformanceDirection
-    is_significant: bool = field(init=False)
-    threshold_exceeded: bool = False
-
-    def __post_init__(self):
-        # Calculate significance based on percent change
-        object.__setattr__(self, 'is_significant', abs(self.percent_change) >= 5.0)
-
-    @property
-    def change_display(self) -> str:
-        """Formatted change percentage for display."""
-        if self.percent_change == 0:
-            return "No Change"
-        sign = "+" if self.percent_change > 0 else ""
-        return f"{sign}{self.percent_change:.1f}%"
-
-
-# ================== ETL INTEGRATION ==================
-
-@dataclass
-class ETLContext:
-    """Context object for ETL pipeline operations."""
-    report_id: str
-    api_wrapper: Any
-    extraction_params: Dict[str, Any] = field(default_factory=dict)
-    transformation_params: Dict[str, Any] = field(default_factory=dict)
-    loading_params: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ThresholdConfig:
-    """Verify this matches what we're using in the transformer."""
-    target: str = Field(description="The metric this threshold applies to")
-    threshold_value: float = Field(description="The numeric threshold value")
-    condition: ThresholdCondition = Field(
-        default=ThresholdCondition.LESS_THAN,
-        description="The condition for success"
-    )
-
-
-@dataclass()
-class TicketPayload:
-    """
-    Defines the canonical structure for creating a ticket in an external system.
-    This model belongs in data_models.py as it represents a core data entity.
-    """
-    title: str
-    board_id: str
-    description: str
-    external_link: str
-    engagement: str
-    assignee: str
-    start_date: date
-    end_date: date
-    severity: str = "Medium"
-    type: str = "Performance Degradation"
-    tags: List[str] = field(default_factory=list)
-
-
-class ReportType(Enum):
-    """Report type enumeration for type safety"""
-    BASELINE = "baseline"
-    COMPARISON = "comparison"
-    UI_PERFORMANCE = "ui_performance"
-    BACKEND = "backend"
-    MOBILE = "mobile"
+class PerformanceAnalysisResult(BaseModel):
+    """Structured result from LLM performance comparison analysis."""
+    summary: str = Field(..., description="Executive summary of performance comparison")
+    key_findings: List[str] = Field(..., description="List of key findings from the comparison")
+    performance_trends: Optional[Dict[str, Any]] = Field(default_factory=dict,
+                                                         description="Identified performance trends")
+    recommendations: List[str] = Field(..., description="Actionable recommendations")
+    risk_assessment: Dict[str, Any] = Field(default_factory=dict, description="Risk assessment if performance degraded")
+    confidence_score: float = Field(default=0.8, description="Confidence in the analysis (0-1)")

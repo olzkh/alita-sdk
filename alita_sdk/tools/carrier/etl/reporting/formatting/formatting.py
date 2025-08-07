@@ -12,7 +12,7 @@ class TextFormatter:
     """
 
     @staticmethod
-    def format_transaction_name(name: str) -> str:
+    def format_name(name: str) -> str:
         """Formats a raw transaction name into a human-readable version."""
         try:
             # Remove common HTTP method prefixes

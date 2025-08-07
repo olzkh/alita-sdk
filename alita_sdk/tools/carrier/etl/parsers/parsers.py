@@ -12,11 +12,10 @@ from alita_sdk.tools.carrier.utils.utils import GATLING_CONFIG
 from ..reporting.core.data_models import (
     TransactionMetrics,
     ReportSummary,
-    PerformanceReport,
-    create_transaction_metrics_from_stats,
-    create_empty_transaction_metrics,
-    validate_performance_report, PerformanceStatus, UIPerformanceReport, UIMetrics
+    PerformanceReport, PerformanceStatus, UIPerformanceReport, UIMetrics
 )
+from ..reporting.core.trasaction_metrics import validate_performance_report, create_transaction_metrics_from_stats, \
+    create_empty_transaction_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +68,6 @@ class GatlingReportParser(BaseReportParser):
         self.calculated_think_time = kwargs.get("think_times", GATLING_CONFIG.DEFAULT_THINK_TIME)
         self.logger.info(f"Enhanced Gatling parser initialized with think_time: {self.calculated_think_time}")
 
-    def _get_metric_category(self, metric_name: str) -> str:
-        """
-        Categorizes metrics for conditional formatting in Excel reports.
-        """
-        if metric_name.startswith("Group_"):
-            return "GROUP"
-        elif metric_name == "Total":
-            return "TOTAL"
-        else:
-            return "REQUEST"
-
     def parse(self) -> PerformanceReport:
         """
         Enhanced to support both requests and groups using DRY principles.
@@ -109,10 +97,21 @@ class GatlingReportParser(BaseReportParser):
             duration = date_end - date_start if date_start and date_end else timedelta(seconds=0)
             summary = self._create_summary(users, date_start, date_end, ramp_up_period, duration, transaction_metrics)
 
+            metadata = {
+                "lg_type": "gatling",
+                "parser_version": "1.0",
+                "parse_timestamp": datetime.now().isoformat(),
+                "think_time": self.calculated_think_time,
+                "user_count": users,
+                "duration_seconds": duration,
+                "total_requests": transaction_metrics.get("Total", create_empty_transaction_metrics("Total")).samples
+            }
+            self.logger.info(f"Metadata for Gatling report: {metadata}")
             report = PerformanceReport(
                 summary=summary,
                 transactions=transaction_metrics,
-                report_type=GATLING_CONFIG.REPORT_TYPE
+                report_type=GATLING_CONFIG.REPORT_TYPE,
+                metadata=metadata
             )
             validation_errors = validate_performance_report(report)
             if validation_errors:
@@ -191,7 +190,7 @@ class GatlingReportParser(BaseReportParser):
             'KO': ko_count,
             'min': round(min(response_times), 3) if response_times else 0,
             'max': round(max(response_times), 3) if response_times else 0,
-            'average': round(np.mean(response_times), 3) if response_times else 0,
+            'avg': round(np.mean(response_times), 3) if response_times else 0,
             'median': round(np.median(response_times), 3) if response_times else 0,
             'Error%': self._calculate_error_percentage(ko_count, total_count),
             '90Pct': round(np.percentile(response_times, 90), 3) if response_times else 0,
@@ -210,7 +209,7 @@ class GatlingReportParser(BaseReportParser):
         return ReportSummary(
             max_user_count=users,
             ramp_up_period=ramp_up,
-            error_rate=total_metrics.Error_pct,
+            error_rate=total_metrics.error_rate,
             date_start=date_start,
             date_end=date_end,
             throughput=round(throughput, 2),
@@ -247,11 +246,22 @@ class JMeterReportParser(BaseReportParser):
             # Phase 3: Create the validated ReportSummary object.
             summary = self._create_summary()
 
+            # Create metadata
+            metadata = {
+                "lg_type": "jmeter",
+                "parser_version": "1.0",
+                "parse_timestamp": datetime.now().isoformat(),
+                "think_time": self.calculated_think_time,
+                "total_samples": len(self.df) if self.df is not None else 0,
+                "unique_transactions": len(transaction_metrics) - 1  # Exclude 'Total'
+            }
+
             # Phase 4: Assemble the final, validated PerformanceReport object.
             report = PerformanceReport(
                 summary=summary,
                 transactions=transaction_metrics,
-                report_type="JMETER"
+                report_type="JMETER",
+                metadata=metadata
             )
 
             # Phase 5: Run internal validation and log any issues.
@@ -306,7 +316,7 @@ class JMeterReportParser(BaseReportParser):
             'Total': total, 'OK': ok, 'KO': ko,
             'min': round(float(df['elapsed'].min()), 3),
             'max': round(float(df['elapsed'].max()), 3),
-            'average': round(float(df['elapsed'].mean()), 3),
+            'avg': round(float(df['elapsed'].mean()), 3),
             'median': round(float(df['elapsed'].median()), 3),
             'Error%': self._calculate_error_percentage(ko, total),
             '90Pct': round(float(df['elapsed'].quantile(0.9)), 3),
@@ -357,6 +367,7 @@ class JMeterReportParser(BaseReportParser):
 
         try:
             summary = ReportSummary(
+                simulation_name="karen",
                 max_user_count=max_user_count,
                 ramp_up_period=0,
                 error_rate=error_rate,
