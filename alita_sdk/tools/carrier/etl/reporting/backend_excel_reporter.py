@@ -3,11 +3,12 @@ Excel Workbook Generator
 Author: Karen Florykian
 """
 import logging
-from copy import copy
+import re
 from typing import List, Dict, Optional
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
@@ -17,8 +18,9 @@ from .core.data_models import (
     TransactionMetrics,
     PerformanceStatus,
     ThresholdConfig,
-    ExcelFormattingConfig, PerformanceAnalysisResult
+    PerformanceAnalysisResult
 )
+from ...utils.utils import ExcelFormattingConfig, DateTimeUtils, ExcelStyleUtils, REPORT_THEME
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +65,14 @@ class BusinessInsightsGenerator:
         if report.summary.throughput < 10.0:
             slow_transactions = [
                 name for name, metrics in report.transactions.items()
-                if name != "Total" and metrics.pct_95 > self.config.response_time_critical
+                if name != "Total" and metrics.pct95 > self.config.response_time_critical
             ]
             if slow_transactions:
                 transaction_list = ", ".join(slow_transactions[:3])
                 more_count = len(slow_transactions) - 3
                 if more_count > 0:
                     transaction_list += f" and {more_count} more"
-                insights.append(f"🔻 Throughput below 10.0 req/s affected by slow transactions: {transaction_list}")
+                insights.append(f"🔻 Throughput affected by slow transactions: {transaction_list}")
         return insights
 
     def _get_error_rate_insight(self, report: PerformanceReport) -> str:
@@ -84,7 +86,7 @@ class BusinessInsightsGenerator:
         insights = []
         critical_transactions = [
             name for name, metrics in report.transactions.items()
-            if name != "Total" and metrics.pct_95 > self.config.response_time_critical
+            if name != "Total" and metrics.pct95 > self.config.response_time_critical
         ]
         if critical_transactions:
             insights.append(
@@ -126,9 +128,9 @@ class LegacyExcelFormatter:
         self.config = config or ExcelFormattingConfig()
         self._setup_fills_and_fonts()
         self.header_mapping = {
-            'Transaction': 'request_name', 'Req, count': 'Total', 'KO, count': 'KO',
-            'KO, %': 'Error_pct', 'Min, sec': 'min', 'Avg, sec': 'average',
-            '90p, sec': 'pct_90', '95p, sec': 'pct_95', 'Max, sec': 'max', '📝 Notes': 'notes'
+            'Transaction': 'name', 'Req, count': 'samples', 'KO, count': 'ko',
+            'KO, %': 'error_rate', 'Min, sec': 'min', 'Avg, sec': 'avg',
+            '90p, sec': 'pct90', '95p, sec': 'pct95', 'Max, sec': 'max', '📝 Notes': 'notes'
         }
         self.title_mapping = {
             'Users': 'max_user_count', 'Ramp Up, min': 'ramp_up_period', 'Duration, min': 'duration',
@@ -143,20 +145,20 @@ class LegacyExcelFormatter:
     def _setup_fills_and_fonts(self):
         """Creates openpyxl style objects from the configuration hex colors."""
         self.red_fill = PatternFill(
-            start_color=self.config.critical_color.replace('#', ''),
-            end_color=self.config.critical_color.replace('#', ''), fill_type='solid'
+            start_color=self.config.colors['critical'].replace('#', ''),
+            end_color=self.config.colors['critical'].replace('#', ''), fill_type='solid'
         )
         self.green_fill = PatternFill(
-            start_color=self.config.good_color.replace('#', ''),
-            end_color=self.config.good_color.replace('#', ''), fill_type='solid'
+            start_color=self.config.colors['good'].replace('#', ''),
+            end_color=self.config.colors['good'].replace('#', ''), fill_type='solid'
         )
         self.yellow_fill = PatternFill(
-            start_color=self.config.warning_color.replace('#', ''),
-            end_color=self.config.warning_color.replace('#', ''), fill_type='solid'
+            start_color=self.config.colors['warning'].replace('#', ''),
+            end_color=self.config.colors['warning'].replace('#', ''), fill_type='solid'
         )
         # Font colors for status indicators
-        self.green_font_color = self.config.excellent_color.replace('#', '')
-        self.red_font_color = self.config.critical_color_font.replace('#', '')
+        self.green_font_color = self.config.colors['excellent'].replace('#', '')
+        self.red_font_color = self.config.colors['critical_font'].replace('#', '')
 
     def apply_title_section_formatting(self, ws: Worksheet, report: PerformanceReport, insights: List[str]):
         """Apply title section formatting using data from the report."""
@@ -171,7 +173,7 @@ class LegacyExcelFormatter:
             if hasattr(report.summary.date_end, 'strftime') else report.summary.date_end or 'N/A',
             'throughput': report.summary.throughput,
             'error_rate': report.summary.error_rate / 100.0,
-            'carrier_report': getattr(report.summary, 'carrier_report', 'N/A'),
+            'carrier_report': getattr(report, 'carrier_report_url', 'N/A'),
             'hypothesis': getattr(report.summary, 'hypothesis', 'Validate against SLAs'),
             'build_status': report.build_status.value,
             'justification': report.analysis_summary or "Analysis not provided.",
@@ -233,9 +235,10 @@ class LegacyExcelFormatter:
                 border_style = Side(border_style="thin", color="040404")
                 cell.border = Border(top=border_style, left=border_style, right=border_style, bottom=border_style)
 
-                if data_key in ['min', 'average', 'pct_90', 'pct_95', 'max'] and isinstance(cell_value, (int, float)):
+                if data_key in ['samples', 'ko', 'min', 'avg', 'pct90', 'pct95', 'max'] and isinstance(cell_value,
+                                                                                                       (int, float)):
                     cell.value = round(cell_value / 1000, 3)
-                elif data_key == 'Error_pct' and isinstance(cell_value, (int, float)):
+                elif data_key == 'error_rate' and isinstance(cell_value, (int, float)):
                     cell.number_format = '0.00%'
                     cell.value = cell_value / 100.0
 
@@ -252,10 +255,10 @@ class LegacyExcelFormatter:
 
     def _generate_validation_notes(self, metrics: TransactionMetrics, thresholds: Dict[str, float]) -> str:
         """Generate validation notes based on response time thresholds from config."""
-        logger.debug(f"Generating validation notes for {metrics.request_name}")
+        logger.debug(f"Generating validation notes for {metrics.name}")
         rt_threshold = thresholds.get('response_time', self.config.response_time_warning)
         threshold_seconds = rt_threshold / 1000
-        p95_seconds = metrics.pct_95 / 1000 if hasattr(metrics, 'pct_95') else 0
+        p95_seconds = metrics.pct95 / 1000 if hasattr(metrics, 'pct95') else 0
 
         if p95_seconds <= threshold_seconds:
             return "✅ Within SLA"
@@ -295,10 +298,6 @@ class LegacyExcelFormatter:
             else:
                 ws.column_dimensions[col_letter].width = len(header) + 5
 
-
-# =================================================================================
-# 3. PRODUCTION EXCEL REPORTER (Main Orchestrator)
-# =================================================================================
 
 class ExcelReporter:
     """
@@ -377,9 +376,10 @@ class ExcelReporter:
             f'=HYPERLINK("#{new_sheet_name}!A1", "{new_sheet_name}")',
             report.build_status.value,
             report.summary.throughput,
-            report.transactions.get("Total", TransactionMetrics(request_name="Total", Total=0, KO=0, OK=0, min=0, max=0,
-                                                                average=0, median=0, Error_pct=0, pct_90=0,
-                                                                pct_95=0)).pct_95,
+            report.transactions.get("Total",
+                                    TransactionMetrics(name="Total", samples=0, ko=0, avg=0, min=0, max=0, pct90=0,
+                                                       pct95=0, pct99=0, throughput=0.0, received_kb_per_sec=0.0,
+                                                       sent_kb_per_sec=0.0, total=0)).pct95,
             report.summary.error_rate / 100.0,
             key_issues
         ]
@@ -426,291 +426,376 @@ class ExcelReporter:
 
 class ComparisonReporter:
     """
-    Handles Excel comparison report generation with conditional formatting.
-    Follows KISS principle by separating comparison logic from single report logic.
+    Builds a sophisticated, multi-sheet comparison workbook that integrates the
+    best features of the legacy system with a modern, maintainable, and DRY architecture.
     """
 
     def __init__(self, config: ExcelFormattingConfig = None):
         self.config = config or ExcelFormattingConfig()
         self.formatter = LegacyExcelFormatter(self.config)
-        self._setup_comparison_styles()
+        self.logger = logging.getLogger(__name__)
 
-    def _setup_comparison_styles(self):
-        """Setup comparison-specific styles"""
-        self.header_fill = PatternFill("solid", fgColor='00CDEBEA')
-        self.sub_header_fill = PatternFill("solid", fgColor='007FD5D8')
-        self.dropdown_fill = PatternFill("solid", fgColor='00E6E6E6')
-
-    def generate_comparison_workbook(
-            self,
-            baseline_report: PerformanceReport,
-            current_report: PerformanceReport,
-            comparison_analysis: Optional[PerformanceAnalysisResult] = None
-    ) -> Workbook:
+    def generate_comparison_workbook(self, reports: List[PerformanceReport],
+                                     ai_analysis: Optional[PerformanceAnalysisResult] = None) -> Workbook:
         """
-        Generate a comparison workbook with two reports side by side.
+        Main method to generate the complete, multi-sheet workbook object.
         """
-        logger.info("Generating comparison workbook")
-        wb = Workbook()
+        if not reports or len(reports) < 2:
+            raise ValueError(f"Need at least 2 reports for comparison, got {len(reports) if reports else 0}")
 
-        # Create comparison summary sheet
-        ws_comparison = wb.active
-        ws_comparison.title = "Comparison"
+        self.logger.info(f"Generating interactive comparison workbook with {len(reports)} reports...")
+        wb = self._create_base_workbook()
+        tests_ws = wb["Tests"]
 
-        # Add header section
-        self._add_comparison_header(ws_comparison, baseline_report, current_report)
+        for report in reports:
+            sheet_name = self._generate_sheet_name(report)
+            if sheet_name not in wb.sheetnames:
+                self._add_signle_report_sheet(wb, report, sheet_name)
+                self._update_tests_registry(tests_ws, sheet_name, report)
 
-        # Add comparison table
-        start_row = self._add_comparison_table(ws_comparison, baseline_report, current_report, start_row=15)
+        self._build_comparison_dashboard(wb, ai_analysis)
 
-        # Add LLM analysis if available
-        if comparison_analysis:
-            self._add_llm_analysis_section(ws_comparison, comparison_analysis, start_row + 2)
-
-        # Create individual report sheets (hidden)
-        self._create_hidden_report_sheet(wb, baseline_report, "Baseline")
-        self._create_hidden_report_sheet(wb, current_report, "Current")
-
-        logger.info("Comparison workbook generated successfully")
+        self.logger.info("Comparison workbook object created successfully.")
         return wb
 
-    def _add_comparison_header(self, ws: Worksheet, baseline: PerformanceReport, current: PerformanceReport):
-        """Add comparison header with test information"""
-        headers = [
-            ("Test Comparison", ""),
-            ("Baseline Test", baseline.summary.date_start),
-            ("Current Test", current.summary.date_start),
-            ("", ""),
-            ("Baseline Users", baseline.summary.max_user_count),
-            ("Current Users", current.summary.max_user_count),
-            ("Baseline Throughput", f"{baseline.summary.throughput:.2f} req/s"),
-            ("Current Throughput", f"{current.summary.throughput:.2f} req/s"),
-            ("Baseline Error Rate", f"{baseline.summary.error_rate:.2f}%"),
-            ("Current Error Rate", f"{current.summary.error_rate:.2f}%"),
+    # --- Core Workbook and Sheet Management ---
+
+    def _create_base_workbook(self) -> Workbook:
+        """Creates a new workbook with the required base sheets."""
+        wb = Workbook()
+        if "Sheet" in wb.sheetnames:
+            wb.remove(wb["Sheet"])
+        wb.create_sheet("Comparison", 0)
+        wb.create_sheet("Tests", 1)
+        # wb["Tests"].sheet_state = 'hidden'
+        return wb
+
+    def _generate_sheet_name(self, report: PerformanceReport) -> str:
+        """Generates a unique, human-readable sheet name for a report."""
+        summary = report.summary
+        date_obj = DateTimeUtils.parse_datetime(summary.date_start)
+        user_count = summary.max_user_count
+        test_name = re.sub(r'[\\/*?:\[\]]', '', getattr(report, 'test_name', 'test'))[:15]
+        return f"{user_count}vu_{test_name}_{date_obj.strftime('%m%d_%H%M')}"
+
+    def _add_signle_report_sheet(self, wb: Workbook, report: PerformanceReport, sheet_name: str):
+        """Uses the existing LegacyExcelFormatter to create a data sheet."""
+        ws = wb.create_sheet(sheet_name)
+        insights = BusinessInsightsGenerator(self.config).generate_key_insights(report)
+        thresholds = {
+            'response_time': self.config.response_time_warning,
+            'error_rate': self.config.error_rate_warning
+        }
+
+        next_row = self.formatter.apply_title_section_formatting(ws, report, insights)
+        self.formatter.apply_transaction_table_formatting(ws, report, next_row, thresholds)
+
+        # ws.sheet_state = 'hidden'
+        # self.logger.debug(f"Added hidden data sheet: {sheet_name}")
+
+    def _update_tests_registry(self, tests_ws: Worksheet, sheet_name: str, report: PerformanceReport):
+        """Adds an entry to the 'Tests' registry sheet."""
+        description = f"{report.summary.max_user_count} Users - {getattr(report, 'test_name', 'N/A')}"
+        tests_ws.append([sheet_name, description])
+
+    # --- Dashboard Orchestration ---
+
+    def _build_comparison_dashboard(self, wb: Workbook, ai_analysis: Optional[PerformanceAnalysisResult]):
+        """Orchestrates the creation of the main 'Comparison' dashboard."""
+        ws = wb["Comparison"]
+
+        self._create_dropdowns(ws, wb["Tests"])
+        self._create_summary_section(ws)
+        last_row = self._create_transaction_table(ws, wb)
+
+        if ai_analysis:
+            self._add_ai_analysis_sheet(wb, ai_analysis)
+
+        self._apply_conditional_formatting(ws, last_row)
+        ExcelStyleUtils.auto_adjust_column_width(ws, max_width=40)
+
+    # --- Interactive Features ---
+
+    def _create_dropdowns(self, ws: Worksheet, tests_ws: Worksheet):
+        """Creates interactive dropdowns and sets smart defaults."""
+        # Dropdown labels
+        label1_cell = ws.cell(row=1, column=1, value="Select Test 1:")
+        label2_cell = ws.cell(row=2, column=1, value="Select Test 2:")
+        label1_cell.font = REPORT_THEME.FONT_UI_HEADER
+        label2_cell.font = REPORT_THEME.FONT_UI_HEADER
+
+        # Create data validation for dropdowns
+        if tests_ws.max_row > 0:
+            data_val = DataValidation(
+                type="list",
+                formula1=f'Tests!$A$1:$A${tests_ws.max_row}',
+                allow_blank=False
+            )
+            ws.add_data_validation(data_val)
+            data_val.add(ws["B1"])
+            data_val.add(ws["B2"])
+
+            # Apply dropdown styling
+            dropdown_cells = [ws["B1"], ws["B2"]]
+            for cell in dropdown_cells:
+                cell.fill = REPORT_THEME.FILL_DROPDOWN
+                cell.font = REPORT_THEME.FONT_UI_HEADER
+
+        # Set smart defaults
+        self._set_smart_dropdown_defaults(ws, tests_ws)
+
+    def _set_smart_dropdown_defaults(self, ws: Worksheet, tests_ws: Worksheet):
+        """Pre-selects the latest test and finds the best matching baseline."""
+        if tests_ws.max_row < 1:
+            return
+
+        # Default comparison is always the latest test
+        latest_test_name = tests_ws.cell(row=tests_ws.max_row, column=1).value
+        latest_test_desc = tests_ws.cell(row=tests_ws.max_row, column=2).value
+        ws["B2"].value = latest_test_name
+
+        # Find the best baseline
+        baseline_name = None
+        if latest_test_desc:
+            match = re.search(r"(\d+)\s*Users", str(latest_test_desc))
+            if match:
+                latest_vu = match.group(1)
+                # Search backwards for a test with the same user count
+                for row in range(tests_ws.max_row - 1, 0, -1):
+                    desc = tests_ws.cell(row=row, column=2).value
+                    if desc and f"{latest_vu} Users" in desc:
+                        baseline_name = tests_ws.cell(row=row, column=1).value
+                        break
+
+        # If no baseline found, use the previous test
+        if not baseline_name and tests_ws.max_row >= 2:
+            baseline_name = tests_ws.cell(row=tests_ws.max_row - 1, column=1).value
+
+        ws["B1"].value = baseline_name or latest_test_name
+
+    # --- Dynamic Content Generation ---
+
+    def _create_summary_section(self, ws: Worksheet):
+        """Builds the summary table with INDIRECT formulas."""
+        headers = ["Users", "Ramp up, sec", "Duration, min", "Think time, sec",
+                   "Start Date, BST", "End Date, BST", "Throughput, req/sec", "Error rate, %"]
+
+        for i, header in enumerate(headers, 4):
+            # Header
+            header_cell = ws.cell(row=i, column=1, value=header)
+            header_cell.font = REPORT_THEME.FONT_SUMMARY_LABEL
+
+            # Test 1 formula (baseline)
+            test1_cell = ws.cell(row=i, column=2,
+                                 value=f"=IF($B$1=\"\",\"\",INDIRECT(\"'\"&$B$1&\"'!B{i - 3}\"))")
+            ExcelStyleUtils.apply_data_style(test1_cell)
+
+            # Test 2 formula (comparison)
+            test2_cell = ws.cell(row=i, column=3,
+                                 value=f"=IF($B$2=\"\",\"\",INDIRECT(\"'\"&$B$2&\"'!B{i - 3}\"))")
+            ExcelStyleUtils.apply_data_style(test2_cell)
+
+    def _create_transaction_table(self, ws: Worksheet, wb: Workbook) -> int:
+        """Builds the detailed, multi-column transaction comparison table."""
+        all_transactions = self._get_all_transactions(wb)
+        if not all_transactions:
+            return ws.max_row
+
+        start_row = ws.max_row + 3
+
+        # Build the exact table structure from your screenshot
+        self._create_transaction_headers(ws, start_row)
+        self._populate_transaction_data(ws, all_transactions, start_row + 2)
+
+        return ws.max_row
+
+    def _create_transaction_headers(self, ws: Worksheet, start_row: int):
+        """Create the exact header structure matching the screenshot."""
+        main_headers = [
+            ('Transaction', 1, 1),
+            ('Req. count', 2, 2),
+            ('KO, count', 4, 2),
+            ('Min, sec', 6, 2),
+            ('Avg, sec', 8, 2),
+            ('90p, sec', 10, 2),
+            ('95p, sec', 12, 2),
+            ('Difference, 90p', 14, 4),  # This spans 4 columns
+            ('Max, sec', 18, 2)
         ]
 
-        for row, (label, value) in enumerate(headers, 1):
-            if label:
-                ws.cell(row=row, column=1, value=label).fill = self.header_fill
-                ws.cell(row=row, column=1).font = Font(bold=True)
-            if value:
-                ws.cell(row=row, column=2, value=value).fill = self.header_fill
-                ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
+        # Create main headers with merging
+        for header_text, start_col, span in main_headers:
+            cell = ws.cell(row=start_row, column=start_col, value=header_text)
+            REPORT_THEME.apply_header_style(cell)
 
-    def _add_comparison_table(self, ws: Worksheet, baseline: PerformanceReport, current: PerformanceReport,
-                              start_row: int) -> int:
-        """Add the main comparison table with conditional formatting"""
+            if span > 1:
+                ws.merge_cells(start_row=start_row, start_column=start_col,
+                               end_row=start_row, end_column=start_col + span - 1)
 
-        # Table headers
-        headers = [
-            ("Transaction", 1, 1),
-            ("Requests", 2, 3),
-            ("Errors", 4, 5),
-            ("Avg Response (s)", 6, 7),
-            ("95th Percentile (s)", 8, 9),
-            ("Difference", 10, 11),
+        # Sub headers (row 2)
+        sub_headers = [
+            (2, 'test1'), (3, 'test2'),  # Req. count
+            (4, 'test1'), (5, 'test2'),  # KO, count
+            (6, 'test1'), (7, 'test2'),  # Min, sec
+            (8, 'test1'), (9, 'test2'),  # Avg, sec
+            (10, 'test1'), (11, 'test2'),  # 90p, sec
+            (12, 'test1'), (13, 'test2'),  # 95p, sec
+            (14, 'Diff, sec'), (15, 'Diff, %'), (16, 'Diff, sec'), (17, 'Diff, %'),  # Difference columns
+            (18, 'test1'), (19, 'test2')  # Max, sec
         ]
 
-        # Main headers
-        for header, start_col, end_col in headers:
-            ws.cell(row=start_row, column=start_col, value=header).fill = self.sub_header_fill
-            ws.cell(row=start_row, column=start_col).font = Font(bold=True)
-            if start_col != end_col:
-                ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=end_col)
+        for col, text in sub_headers:
+            cell = ws.cell(row=start_row + 1, column=col, value=text)
+            REPORT_THEME.apply_header_style(cell)
 
-        # Sub headers
-        start_row += 1
-        sub_headers = ["", "Baseline", "Current", "Baseline", "Current", "Baseline", "Current", "Baseline", "Current",
-                       "Diff (s)", "Diff (%)"]
-        for col, header in enumerate(sub_headers, 1):
-            ws.cell(row=start_row, column=col, value=header).fill = self.sub_header_fill
-
-        # Get all unique transactions
-        all_transactions = set(baseline.transactions.keys()) | set(current.transactions.keys())
-        all_transactions.discard("Total")  # Remove Total, we'll add it at the end
-        sorted_transactions = sorted(all_transactions)
-        if "Total" in baseline.transactions or "Total" in current.transactions:
-            sorted_transactions.append("Total")
-
-        # Add transaction data
-        data_start_row = start_row + 1
-        for row_offset, tx_name in enumerate(sorted_transactions):
-            row = data_start_row + row_offset
+    def _populate_transaction_data(self, ws: Worksheet, transactions: List[str], start_row: int):
+        """Populate transaction data with proper formulas matching the data structure."""
+        for row_idx, tx_name in enumerate(transactions, start_row):
             # Transaction name
-            ws.cell(row=row, column=1, value=tx_name)
+            ws.cell(row=row_idx, column=1, value=tx_name)
 
-            # Get metrics for both reports
-            baseline_metrics = baseline.transactions.get(tx_name, None)
-            current_metrics = current.transactions.get(tx_name, None)
+            metric_columns = [
+                (2, 3, 2),  # Req. count - column B
+                (4, 5, 3),  # KO, count - column C
+                (6, 7, 5),  # Min, sec - column E (converted from ms to sec)
+                (8, 9, 6),  # Avg, sec - column F
+                (10, 11, 7),  # 90p, sec - column G
+                (12, 13, 8),  # 95p, sec - column H
+                (18, 19, 9)  # Max, sec - column I
+            ]
 
-            # Helper function to safely get metric value
-            def get_metric(metrics, attr, divisor=1):
-                if metrics and hasattr(metrics, attr):
-                    value = getattr(metrics, attr)
-                    return value / divisor if value else 0
-                return 0
+            for test1_col, test2_col, source_col in metric_columns:
+                # Test1 formula (baseline)
+                test1_formula = f"=IFERROR(IF($B$1=\"\",\"\",VLOOKUP($A{row_idx},INDIRECT(\"'\"&$B$1&\"'!$A:$J\"),{source_col},FALSE)),\"\")"
+                ws.cell(row=row_idx, column=test1_col, value=test1_formula)
 
-            # Fill comparison data
-            ws.cell(row=row, column=2, value=get_metric(baseline_metrics, 'Total'))
-            ws.cell(row=row, column=3, value=get_metric(current_metrics, 'Total'))
-            ws.cell(row=row, column=4, value=get_metric(baseline_metrics, 'KO'))
-            ws.cell(row=row, column=5, value=get_metric(current_metrics, 'KO'))
-            ws.cell(row=row, column=6, value=round(get_metric(baseline_metrics, 'average', 1000), 3))
-            ws.cell(row=row, column=7, value=round(get_metric(current_metrics, 'average', 1000), 3))
-            ws.cell(row=row, column=8, value=round(get_metric(baseline_metrics, 'pct_95', 1000), 3))
-            ws.cell(row=row, column=9, value=round(get_metric(current_metrics, 'pct_95', 1000), 3))
+                # Test2 formula (comparison)
+                test2_formula = f"=IFERROR(IF($B$2=\"\",\"\",VLOOKUP($A{row_idx},INDIRECT(\"'\"&$B$2&\"'!$A:$J\"),{source_col},FALSE)),\"\")"
+                ws.cell(row=row_idx, column=test2_col, value=test2_formula)
 
-            # Calculate differences
-            baseline_p95 = get_metric(baseline_metrics, 'pct_95', 1000)
-            current_p95 = get_metric(current_metrics, 'pct_95', 1000)
+            # Special handling for 90p difference columns (columns 14-17)
+            test1_90p_col = get_column_letter(10)  # 90p test1
+            test2_90p_col = get_column_letter(11)  # 90p test2
 
-            if baseline_p95 > 0:
-                diff_seconds = current_p95 - baseline_p95
-                diff_percent = (diff_seconds / baseline_p95) * 100
-                ws.cell(row=row, column=10, value=round(diff_seconds, 3))
-                ws.cell(row=row, column=11, value=round(diff_percent, 2))
-                ws.cell(row=row, column=11).number_format = '0.00%'
+            # Difference in seconds (absolute)
+            diff_sec_formula = f"=IF(AND({test1_90p_col}{row_idx}<>\"\",{test2_90p_col}{row_idx}<>\"\"),{test2_90p_col}{row_idx}-{test1_90p_col}{row_idx},\"\")"
+            ws.cell(row=row_idx, column=14, value=diff_sec_formula)
 
-            # Apply borders
-            for col in range(1, 12):
-                ws.cell(row=row, column=col).border = Border(
-                    top=Side(border_style="thin", color="040404"),
-                    left=Side(border_style="thin", color="040404"),
-                    right=Side(border_style="thin", color="040404"),
-                    bottom=Side(border_style="thin", color="040404")
-                )
+            # Difference in percentage
+            diff_pct_formula = f"=IF(AND({test1_90p_col}{row_idx}>0,{test2_90p_col}{row_idx}<>\"\"),({test2_90p_col}{row_idx}-{test1_90p_col}{row_idx})/{test1_90p_col}{row_idx},\"\")"
+            pct_cell = ws.cell(row=row_idx, column=15, value=diff_pct_formula)
+            pct_cell.number_format = '0.00%'
 
-            # Highlight Total row
-            if tx_name == "Total":
-                for col in range(1, 12):
-                    ws.cell(row=row, column=col).font = Font(bold=True)
-                    ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor='007FD5D8')
+            # Additional difference columns (95p) - columns 16-17
+            test1_95p_col = get_column_letter(12)  # 95p test1
+            test2_95p_col = get_column_letter(13)  # 95p test2
 
-            # Apply conditional formatting
-        self._apply_comparison_conditional_formatting(ws, data_start_row, row)
+            diff_95p_sec_formula = f"=IF(AND({test1_95p_col}{row_idx}<>\"\",{test2_95p_col}{row_idx}<>\"\"),{test2_95p_col}{row_idx}-{test1_95p_col}{row_idx},\"\")"
+            ws.cell(row=row_idx, column=16, value=diff_95p_sec_formula)
 
-        # Auto-adjust column widths
-        for col in range(1, 12):
-            ws.column_dimensions[get_column_letter(col)].auto_size = True
+            diff_95p_pct_formula = f"=IF(AND({test1_95p_col}{row_idx}>0,{test2_95p_col}{row_idx}<>\"\"),({test2_95p_col}{row_idx}-{test1_95p_col}{row_idx})/{test1_95p_col}{row_idx},\"\")"
+            pct_95_cell = ws.cell(row=row_idx, column=17, value=diff_95p_pct_formula)
+            pct_95_cell.number_format = '0.00%'
 
-        return row + 1
+    def _get_all_transactions(self, wb: Workbook) -> List[str]:
+        """Gets a sorted, unique list of all transaction names from data sheets."""
+        transactions = set()
+        for sheet in wb.worksheets:
+            if sheet.title not in ["Comparison", "Tests", "AI Analysis"] and sheet.sheet_state != 'hidden':
+                # Look for transaction data starting from a reasonable row (after headers)
+                for row in range(12, min(sheet.max_row + 1, 100)):  # Limit search
+                    cell_val = sheet.cell(row=row, column=1).value
+                    if cell_val and isinstance(cell_val,
+                                               str) and cell_val != "Total" and cell_val != "Transaction" and cell_val != "Justification" and cell_val != "Key Insights" and cell_val != "Overall system performance":
+                        transactions.add(cell_val)
+        return sorted(list(transactions))
 
-    def _apply_comparison_conditional_formatting(self, ws: Worksheet, start_row: int, end_row: int):
-        """Apply conditional formatting to comparison table"""
+    def _add_ai_analysis_sheet(self, wb: Workbook, analysis: PerformanceAnalysisResult):
+        """Adds the AI analysis to its own dedicated sheet."""
+        ws = wb.create_sheet("AI Analysis")
+        title_cell = ws.cell(row=1, column=1, value="AI Performance Analysis")
+        title_cell.font = REPORT_THEME.FONT_UI_BOLD
 
-        # Response time thresholds (in seconds)
-        rt_threshold = self.config.response_time_warning / 1000
-        rt_critical = self.config.response_time_critical / 1000
+        current_row = 3
 
-        # Format response time columns (6-9)
-        for col in [6, 7, 8, 9]:
-            col_letter = get_column_letter(col)
-            range_str = f"{col_letter}{start_row}:{col_letter}{end_row}"
+        # Executive Summary
+        summary_header = ws.cell(row=current_row, column=1, value="Executive Summary")
+        summary_header.font = REPORT_THEME.FONT_UI_HEADER
 
-            # Green for good performance
-            ws.conditional_formatting.add(
-                range_str,
-                CellIsRule(operator='lessThan', formula=[rt_threshold], fill=self.formatter.green_fill)
-            )
-            # Yellow for warning
-            ws.conditional_formatting.add(
-                range_str,
-                CellIsRule(operator='between', formula=[rt_threshold, rt_critical], fill=self.formatter.yellow_fill)
-            )
-            # Red for critical
-            ws.conditional_formatting.add(
-                range_str,
-                CellIsRule(operator='greaterThan', formula=[rt_critical], fill=self.formatter.red_fill)
-            )
+        summary_content = ws.cell(row=current_row + 1, column=1, value=analysis.summary)
+        summary_content.alignment = REPORT_THEME.ALIGN_JUSTIFY_TOP
 
-        # Format difference columns
-        # Difference in seconds (column 10)
-        diff_range = f"J{start_row}:J{end_row}"
-        ws.conditional_formatting.add(
-            diff_range,
-            CellIsRule(operator='lessThan', formula=[0], fill=self.formatter.green_fill)
-        )
-        ws.conditional_formatting.add(
-            diff_range,
-            CellIsRule(operator='greaterThan', formula=[5], fill=self.formatter.red_fill)
-        )
-
-        # Difference in percentage (column 11)
-        pct_range = f"K{start_row}:K{end_row}"
-        ws.conditional_formatting.add(
-            pct_range,
-            CellIsRule(operator='lessThan', formula=[0], fill=self.formatter.green_fill)
-        )
-        ws.conditional_formatting.add(
-            pct_range,
-            CellIsRule(operator='greaterThan', formula=[0.1], fill=self.formatter.red_fill)  # 10%
-        )
-
-    def _add_llm_analysis_section(self, ws: Worksheet, analysis: PerformanceAnalysisResult, start_row: int):
-        """Add LLM analysis section to the comparison sheet"""
-
-        # Section header
-        ws.cell(row=start_row, column=1, value="AI Performance Analysis").font = Font(bold=True, size=14)
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=11)
-
-        current_row = start_row + 2
-
-        # Summary
-        ws.cell(row=current_row, column=1, value="Summary:").font = Font(bold=True)
-        ws.cell(row=current_row, column=2, value=analysis.summary)
-        ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=11)
-        ws.row_dimensions[current_row].height = max(30, 15 * (analysis.summary.count('\n') + 1))
-        current_row += 2
+        current_row += 3
 
         # Key Findings
-        if analysis.key_findings:
-            ws.cell(row=current_row, column=1, value="Key Findings:").font = Font(bold=True)
+        findings_header = ws.cell(row=current_row, column=1, value="Key Findings")
+        findings_header.font = REPORT_THEME.FONT_UI_HEADER
+
+        for finding in analysis.key_findings:
             current_row += 1
-            for finding in analysis.key_findings:
-                ws.cell(row=current_row, column=2, value=f"• {finding}")
-                ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=11)
-                current_row += 1
-            current_row += 1
+            finding_cell = ws.cell(row=current_row, column=1, value=f"• {finding}")
+            finding_cell.alignment = REPORT_THEME.ALIGN_LEFT_CENTER
+
+        current_row += 2
 
         # Recommendations
-        if analysis.recommendations:
-            ws.cell(row=current_row, column=1, value="Recommendations:").font = Font(bold=True)
+        rec_header = ws.cell(row=current_row, column=1, value="Recommendations")
+        rec_header.font = REPORT_THEME.FONT_UI_HEADER
+
+        for rec in analysis.recommendations:
             current_row += 1
-            for rec in analysis.recommendations:
-                ws.cell(row=current_row, column=2, value=f"• {rec}")
-                ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=11)
-                current_row += 1
+            rec_cell = ws.cell(row=current_row, column=1, value=f"• {rec}")
+            rec_cell.alignment = REPORT_THEME.ALIGN_LEFT_CENTER
 
-        # Risk Assessment
-        if analysis.risk_assessment:
-            current_row += 1
-            ws.cell(row=current_row, column=1, value="Risk Level:").font = Font(bold=True)
-            risk_level = analysis.risk_assessment.get('level', 'Unknown')
-            risk_color = {
-                'Low': self.formatter.green_font_color,
-                'Medium': 'FFA500',  # Orange
-                'High': self.formatter.red_font_color
-            }.get(risk_level, '000000')
+        ExcelStyleUtils.auto_adjust_column_width(ws, max_width=100)
 
-            ws.cell(row=current_row, column=2, value=risk_level).font = Font(bold=True, color=risk_color)
+    def _apply_conditional_formatting(self, ws: Worksheet, last_data_row: int):
+        """Applies conditional formatting to difference columns for visual comparison."""
+        # Apply conditional formatting to percentage difference columns (15 and 17)
+        diff_columns = [15, 17]  # Diff % columns for 90p and 95p
 
-    def _create_hidden_report_sheet(self, wb: Workbook, report: PerformanceReport, sheet_name: str):
-        """Create a hidden sheet with individual report data"""
-        ws = wb.create_sheet(sheet_name)
-        ws.sheet_state = 'hidden'
+        for col_num in diff_columns:
+            col_letter = get_column_letter(col_num)
+            cell_range = f'{col_letter}3:{col_letter}{last_data_row}'
 
-        # Use the existing formatter to create the report
-        reporter = ExcelReporter(self.config)
-        temp_wb = reporter.generate_workbook(report)
-        source_ws = temp_wb.active
+            # Improvement (green for negative values - better performance)
+            improvement_rule = CellIsRule(
+                operator='lessThan',
+                formula=[-0.05],  # 5% improvement threshold
+                fill=PatternFill(start_color=self.config.colors['good'], fill_type='solid')
+            )
 
-        # Copy all cells from temp workbook
-        for row in source_ws.iter_rows():
-            for cell in row:
-                new_cell = ws.cell(row=cell.row, column=cell.column, value=cell.value)
-                if cell.has_style:
-                    new_cell.font = copy(cell.font)
-                    new_cell.fill = copy(cell.fill)
-                    new_cell.border = copy(cell.border)
-                    new_cell.alignment = copy(cell.alignment)
-                    new_cell.number_format = cell.number_format
+            # Degradation (red for positive values - worse performance)
+            degradation_rule = CellIsRule(
+                operator='greaterThan',
+                formula=[0.05],  # 5% degradation threshold
+                fill=PatternFill(start_color=self.config.colors['critical'], fill_type='solid')
+            )
+
+            ws.conditional_formatting.add(cell_range, improvement_rule)
+            ws.conditional_formatting.add(cell_range, degradation_rule)
+
+        # Apply conditional formatting to absolute response time columns
+        # Highlight high response times in test1 and test2 columns
+        response_time_columns = [10, 11, 12, 13]  # 90p and 95p columns
+
+        for col_num in response_time_columns:
+            col_letter = get_column_letter(col_num)
+            cell_range = f'{col_letter}3:{col_letter}{last_data_row}'
+
+            # Warning for response times > 1 second
+            warning_rule = CellIsRule(
+                operator='greaterThan',
+                formula=[1.0],
+                fill=PatternFill(start_color=self.config.colors['warning'], fill_type='solid')
+            )
+
+            # Critical for response times > 2 seconds
+            critical_rule = CellIsRule(
+                operator='greaterThan',
+                formula=[2.0],
+                fill=PatternFill(start_color=self.config.colors['critical'], fill_type='solid')
+            )
+
+            ws.conditional_formatting.add(cell_range, warning_rule)
+            ws.conditional_formatting.add(cell_range, critical_rule)
