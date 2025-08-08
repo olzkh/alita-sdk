@@ -2,10 +2,12 @@ import logging
 import json
 from typing import Type, Optional, List, Dict, Union
 
+from datetime import datetime
 from langchain_core.tools import BaseTool, ToolException
 from pydantic import BaseModel, Field
 
 from .api_wrapper import CarrierAPIWrapper
+from .backend_reports_tool import BaseCarrierTool
 from .utils.utils import tool_logger
 
 logger = logging.getLogger(__name__)
@@ -187,7 +189,7 @@ class RunTestByIDTool(BaseTool):
             }
 
             # 7. Execute the test via the API wrapper
-            report_id = self.api_wrapper.run_test(test_id, json_body)
+            report_id = self.api_wrapper.run_test(str(test_id), json_body)
             # Build the correct report URL
             base_url = self.api_wrapper.url.rstrip('/')
             report_url = f"{base_url}/-/performance/backend/results?result_id={report_id}"
@@ -223,14 +225,81 @@ class CreateBackendTestInput(BaseModel):
     email_integration: Optional[Dict[str, Optional[Union[int, List[str]]]]] = Field(None,
                                                                                     description="Email integration configuration")
 
+class CreateBackendTestTool(BaseCarrierTool):
+    """⚗️ Creates new performance tests with comprehensive validation."""
 
-class CreateBackendTestTool(BaseTool):
-    api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
     name: str = "create_backend_test"
-    description: str = "Create a new backend test plan in the Carrier platform."
+    description: str = "⚗️ Create a new performance test configuration"
     args_schema: Type[BaseModel] = CreateBackendTestInput
 
-    @tool_logger
-    def _run(self, **kwargs):
-        logger.info(f"CreateBackendTestTool executed with kwargs: {kwargs}")
-        return "CreateBackendTestTool executed (original logic placeholder)."
+    def _run(self, test_name: str, entrypoint: str, runner: str,
+             source: Dict, test_parameters: List[Dict] = None) -> str:
+        operation = f"creating test {test_name}"
+        start_time = datetime.now()
+
+        self.log_operation_start(
+            operation,
+            test_name=test_name,
+            runner=runner,
+            entrypoint=entrypoint,
+            param_count=len(test_parameters or [])
+        )
+
+        try:
+            # Validate runner format
+            available_runners = {
+                "JMeter_v5.6.3": "v5.6.3",
+                "JMeter_v5.5": "v5.5",
+                "Gatling_v3.7": "v3.7",
+                "Gatling_maven": "maven",
+            }
+
+            # Normalize runner
+            runner_value = available_runners.get(runner, runner)
+            if runner_value not in available_runners.values():
+                raise ToolException(f"🔧 Invalid runner '{runner}'. Available: {list(available_runners.keys())}")
+
+            # Build test configuration
+            test_config = {
+                "common_params": {
+                    "name": test_name,
+                    "test_type": "default",
+                    "env_type": "default",
+                    "entrypoint": entrypoint,
+                    "runner": runner_value,
+                    "source": source,
+                    "env_vars": {
+                        "cpu_quota": 1,
+                        "memory_quota": 4,
+                        "cloud_settings": {},
+                        "custom_cmd": ""
+                    },
+                    "parallel_runners": 1,
+                    "cc_env_vars": {},
+                    "customization": {},
+                    "location": "default"
+                },
+                "test_parameters": test_parameters or [],
+                "integrations": {},
+                "scheduling": [],
+                "run_test": False
+            }
+
+            # Create test
+            response = self.api_wrapper.create_test(test_config)
+            test_info = response.json() if hasattr(response, 'json') else {"id": "created"}
+
+            duration = (datetime.now() - start_time).total_seconds()
+            self.log_operation_success(operation, duration, test_id=test_info.get('id'))
+
+            return json.dumps({
+                "message": f"✅ Test '{test_name}' created successfully",
+                "test_id": test_info.get('id'),
+                "test_name": test_info.get('name', test_name),
+                "runner": runner_value,
+                "creation_timestamp": datetime.now().isoformat()
+            }, indent=2)
+
+        except Exception as e:
+            self.handle_api_error(operation, e)
+

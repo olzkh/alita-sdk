@@ -23,7 +23,7 @@ class UpdateUITestScheduleTool(BaseTool):
         schedule_name=(str, Field(default="", description="Name for the new schedule")),
         cron_timer=(str, Field(default="", description="Cron expression for schedule timing (e.g., '0 2 * * *')")),
     )
-    
+    #TODO: add test name ' schedule_in_seconds
     def _run(self, test_id: str = "", schedule_name: str = "", cron_timer: str = ""):
         try:
             # Check if no parameters provided - show available tests

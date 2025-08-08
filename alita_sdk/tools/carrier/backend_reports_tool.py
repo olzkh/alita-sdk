@@ -419,86 +419,6 @@ class RunTestByIDTool(BaseCarrierTool):
             "integrations": test_data.get("integrations", {})
         }
 
-
-class CreateBackendTestTool(BaseCarrierTool):
-    """⚗️ Creates new performance tests with comprehensive validation."""
-
-    name: str = "create_backend_test"
-    description: str = "⚗️ Create a new performance test configuration"
-    args_schema: Type[BaseModel] = CreateBackendTestInput
-
-    def _run(self, test_name: str, entrypoint: str, runner: str,
-             source: Dict, test_parameters: List[Dict] = None) -> str:
-        operation = f"creating test {test_name}"
-        start_time = datetime.now()
-
-        self.log_operation_start(
-            operation,
-            test_name=test_name,
-            runner=runner,
-            entrypoint=entrypoint,
-            param_count=len(test_parameters or [])
-        )
-
-        try:
-            # Validate runner format
-            available_runners = {
-                "JMeter_v5.6.3": "v5.6.3",
-                "JMeter_v5.5": "v5.5",
-                "Gatling_v3.7": "v3.7",
-                "Gatling_maven": "maven",
-            }
-
-            # Normalize runner
-            runner_value = available_runners.get(runner, runner)
-            if runner_value not in available_runners.values():
-                raise ToolException(f"🔧 Invalid runner '{runner}'. Available: {list(available_runners.keys())}")
-
-            # Build test configuration
-            test_config = {
-                "common_params": {
-                    "name": test_name,
-                    "test_type": "default",
-                    "env_type": "default",
-                    "entrypoint": entrypoint,
-                    "runner": runner_value,
-                    "source": source,
-                    "env_vars": {
-                        "cpu_quota": 1,
-                        "memory_quota": 4,
-                        "cloud_settings": {},
-                        "custom_cmd": ""
-                    },
-                    "parallel_runners": 1,
-                    "cc_env_vars": {},
-                    "customization": {},
-                    "location": "default"
-                },
-                "test_parameters": test_parameters or [],
-                "integrations": {},
-                "scheduling": [],
-                "run_test": False
-            }
-
-            # Create test
-            response = self.api_wrapper.create_test(test_config)
-            test_info = response.json() if hasattr(response, 'json') else {"id": "created"}
-
-            duration = (datetime.now() - start_time).total_seconds()
-            self.log_operation_success(operation, duration, test_id=test_info.get('id'))
-
-            return json.dumps({
-                "message": f"✅ Test '{test_name}' created successfully",
-                "test_id": test_info.get('id'),
-                "test_name": test_info.get('name', test_name),
-                "runner": runner_value,
-                "creation_timestamp": datetime.now().isoformat()
-            }, indent=2)
-
-        except Exception as e:
-            self.handle_api_error(operation, e)
-
-
 class GetReportsTool(BaseCarrierTool):
     """📋 Retrieves and filters performance reports with advanced sorting."""
 
@@ -506,7 +426,7 @@ class GetReportsTool(BaseCarrierTool):
     description: str = "📋 Get a filtered and sorted list of performance reports."
     args_schema: Type[BaseModel] = GetReportsInput
 
-    def _run(self, limit: int = 5, tag_name: Optional[str] = None, environment: Optional[str] = None,
+    def _run(self, limit: int = 15, tag_name: Optional[str] = None, environment: Optional[str] = None,
              test_name: Optional[str] = None, entrypoint: Optional[str] = None, status: Optional[str] = None,
              runner_type: Optional[str] = None, sort_by: str = "start_time", sort_order: str = "desc") -> str:
         operation = "fetching reports"
@@ -536,11 +456,25 @@ class GetReportsTool(BaseCarrierTool):
                 returned_count=len(processed_reports)
             )
 
-            return json.dumps({
-                "message": f"📋 Found {len(processed_reports)} reports matching criteria.",
-                "filtering_applied": {k: v for k, v in active_filters.items() if v is not None},
-                "reports": [self.format_report_summary(report) for report in processed_reports]
-            }, indent=2)
+            # Apply Copilot-friendly formatting for large result sets
+            if len(processed_reports) > 5:
+                report_ids = [f"Report ID: {report.get('id', 'N/A')}" for report in processed_reports]
+                return json.dumps({
+                    "message": f"📋 Found {len(processed_reports)} reports matching criteria (showing Report IDs only due to large result set).",
+                    "limit_applied": limit,
+                    "total_available": len(raw_reports),
+                    "filtering_applied": {k: v for k, v in active_filters.items() if v is not None},
+                    "report_ids": report_ids,
+                    "note": "Use get_report_by_id tool with specific Report ID for detailed information"
+                }, indent=2)
+            else:
+                return json.dumps({
+                    "message": f"📋 Found {len(processed_reports)} reports matching criteria.",
+                    "limit_applied": limit,
+                    "total_available": len(raw_reports),
+                    "filtering_applied": {k: v for k, v in active_filters.items() if v is not None},
+                    "reports": [self.format_report_summary(report) for report in processed_reports]
+                }, indent=2)
 
         except Exception as e:
             self.handle_api_error(operation, e)
@@ -614,6 +548,44 @@ class GetReportsTool(BaseCarrierTool):
                 return None
         return value
 
+    def _run_legacy(self, limit: int = 5, tag_name: Optional[str] = None, environment: Optional[str] = None,
+             test_name: Optional[str] = None, entrypoint: Optional[str] = None, status: Optional[str] = None,
+             runner_type: Optional[str] = None, sort_by: str = "start_time", sort_order: str = "desc") -> str:
+        operation = "fetching reports"
+        start_time = datetime.now()
+
+        active_filters = {
+            "tag": tag_name, "environment": environment, "test_name": test_name,
+            "entrypoint": entrypoint, "status": status, "runner_type": runner_type,
+            "sort_by": sort_by, "sort_order": sort_order, "limit": limit
+        }
+        self.log_operation_start(operation, **{k: v for k, v in active_filters.items() if v is not None})
+
+        try:
+            raw_reports = self.api_wrapper.get_reports_list()
+
+            # Filter, sort, and then limit the reports
+            processed_reports = self._filter_and_sort_reports(
+                raw_reports, limit, sort_by, sort_order,
+                tag_name=tag_name, environment=environment, test_name=test_name,
+                entrypoint=entrypoint, status=status, runner_type=runner_type
+            )
+
+            duration = (datetime.now() - start_time).total_seconds()
+            self.log_operation_success(
+                operation, duration,
+                total_fetched=len(raw_reports),
+                returned_count=len(processed_reports)
+            )
+
+            return json.dumps({
+                "message": f"📋 Found {len(processed_reports)} reports matching criteria.",
+                "filtering_applied": {k: v for k, v in active_filters.items() if v is not None},
+                "reports": [self.format_report_summary(report) for report in processed_reports]
+            }, indent=2)
+
+        except Exception as e:
+            self.handle_api_error(operation, e)
 
 class GetReportByIDTool(BaseCarrierTool):
     """Tool for retrieving performance test report by ID."""

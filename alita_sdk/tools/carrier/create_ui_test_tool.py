@@ -197,30 +197,71 @@ class CreateUITestTool(BaseTool):
             if not test_name:
                 raise ValueError("Missing required parameter: 'test_name' or 'name'.")
 
+            # Extract parameters with proper fallback handling
+            test_type = params.get("test_type")
+            env_type = params.get("env_type") or params.get("environment_type")
+            entrypoint = params.get("entrypoint") or params.get("entry_point_file")
+            runner = params.get("runner") or params.get("test_runner_type")
+
+            # Extract git repository details
+            git_details = params.get("git_repository_details", {})
+            repo = params.get("repo") or git_details.get("repository_url")
+            branch = params.get("branch") or git_details.get("branch_name")
+            username = params.get("username") or git_details.get("username")
+            password = params.get("password") or git_details.get("password")
+
+            # Extract resource allocation details
+            resource_allocation = params.get("resource_allocation", {})
+            cpu_quota = params.get("cpu_quota") or resource_allocation.get("cpu_quota")
+            memory_quota = params.get("memory_quota") or resource_allocation.get("memory_quota")
+            parallel_runners = params.get("parallel_runners") or resource_allocation.get(
+                "number_of_parallel_runners")
+            loops = params.get("loops") or resource_allocation.get("number_of_loops")
+
+            # Validate required parameters
+            required_params = {
+                "test_type": test_type,
+                "env_type": env_type,
+                "entrypoint": entrypoint,
+                "runner": runner,
+                "repo": repo,
+                "branch": branch,
+                "username": username,
+                "password": password,
+                "cpu_quota": cpu_quota,
+                "memory_quota": memory_quota,
+                "parallel_runners": parallel_runners,
+                "loops": loops
+            }
+
+            missing_params = [key for key, value in required_params.items() if value is None]
+            if missing_params:
+                raise ValueError(f"Missing required parameters: {', '.join(missing_params)}")
+
             # Construct the POST body for a new test
             post_body = {
                 "common_params": {
                     "name": test_name,
-                    "test_type": params["test_type"],
-                    "env_type": params["env_type"],
-                    "entrypoint": params["entrypoint"],
-                    "runner": params["runner"],
+                    "test_type": test_type,
+                    "env_type": env_type,
+                    "entrypoint": entrypoint,
+                    "runner": runner,
                     "source": {
-                        "name": "git_httpss",
-                        "repo": params["repo"],
-                        "branch": params["branch"],
-                        "username": params["username"],
-                        "password": params["password"]
+                        "name": "git_https",
+                        "repo": repo,
+                        "branch": branch,
+                        "username": username,
+                        "password": password
                     },
                     "env_vars": {
-                        "cpu_quota": params["cpu_quota"],
-                        "memory_quota": params["memory_quota"],
+                        "cpu_quota": cpu_quota,
+                        "memory_quota": memory_quota,
                         "cloud_settings": {}
                     },
-                    "parallel_runners": params["parallel_runners"],
+                    "parallel_runners": parallel_runners,
                     "cc_env_vars": {},
                     "location": "default",
-                    "loops": params["loops"],
+                    "loops": loops,
                     "aggregation": "max"
                 },
                 "test_parameters": [],
@@ -237,22 +278,21 @@ class CreateUITestTool(BaseTool):
             if response:
                 test_id = response.get("id", "Unknown")
                 return f"""# ✅ UI Test Created Successfully!
-
                         ## Test Information:
                         - **Test ID:** `{test_id}`
                         - **Name:** `{test_name}`
-                        - **Type:** `{params.get('test_type')}`
-                        - **Environment:** `{params.get('env_type')}`
-                        - **Runner:** `{params.get('runner')}`
-                        - **Repository:** `{params.get('repo')}`
-                        - **Branch:** `{params.get('branch')}`
-                        - **Entry Point:** `{params.get('entrypoint')}`
+                        - **Type:** `{test_type}`
+                        - **Environment:** `{env_type}`
+                        - **Runner:** `{runner}`
+                        - **Repository:** `{repo}`
+                        - **Branch:** `{branch}`
+                        - **Entry Point:** `{entrypoint}`
 
                         ## Configuration:
-                        - **CPU Quota:** {params.get('cpu_quota')} cores
-                        - **Memory Quota:** {params.get('memory_quota')} GB
-                        - **Parallel Runners:** {params.get('parallel_runners')}
-                        - **Loops:** {params.get('loops')}
+                        - **CPU Quota:** {cpu_quota} cores
+                        - **Memory Quota:** {memory_quota} GB
+                        - **Parallel Runners:** {parallel_runners}
+                        - **Loops:** {loops}
                         - **Aggregation:** max
                         {f"- **Custom Command:** `{params.get('custom_cmd')}`" if params.get('custom_cmd') else ""}
 
