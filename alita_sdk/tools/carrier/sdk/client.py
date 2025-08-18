@@ -719,3 +719,53 @@ class CarrierClient(BaseModel):
         except Exception as e:
             logger.exception(f"Unexpected error downloading raw content from {url}.")
             raise CarrierAPIError(f"Unexpected error downloading raw content from {url}") from e
+
+    # =============================
+    # Backend metadata & thresholds
+    # =============================
+    def get_backend_environments(self, test_name: str) -> List[str]:
+        """Return environments list for the provided backend test name."""
+        endpoint = self.endpoints.build_endpoint('list_backend_environments')
+        params = {"name": test_name}
+        resp = self._json_request('get', endpoint, params=params)
+        if isinstance(resp, list):
+            return resp
+        logger.warning("Unexpected environments response: %s", type(resp))
+        return []
+
+    def get_backend_requests(self, test_name: str, environment: str) -> List[str]:
+        """Return request names for the provided backend test name and environment."""
+        endpoint = self.endpoints.build_endpoint('list_backend_requests')
+        params = {"name": test_name, "environment": environment}
+        resp = self._json_request('get', endpoint, params=params)
+        if isinstance(resp, list):
+            return resp
+        logger.warning("Unexpected requests response: %s", type(resp))
+        return []
+
+    def create_backend_threshold(self, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new backend threshold."""
+        endpoint = self.endpoints.build_endpoint('backend_thresholds')
+        return self._json_request('post', endpoint, json=threshold_data)
+
+    def get_backend_thresholds(self) -> Dict[str, Any]:
+        """Get all backend thresholds for the project."""
+        endpoint = self.endpoints.build_endpoint('backend_thresholds')
+        return self._json_request('get', endpoint)
+
+    def delete_backend_threshold(self, threshold_id: str) -> Dict[str, Any]:
+        """Delete a backend threshold by ID. Returns success indicator."""
+        endpoint = self.endpoints.build_endpoint('backend_thresholds')
+        params = {"id[]": threshold_id}
+        response = self._request('delete', endpoint, params=params)
+        if response.status_code == 204:
+            return {"success": True}
+        try:
+            return response.json()
+        except Exception:
+            return {"success": False, "status_code": response.status_code}
+
+    def update_backend_threshold(self, threshold_id: str, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a backend threshold by ID."""
+        endpoint = self.endpoints.build_endpoint('backend_threshold_by_id', threshold_id=threshold_id)
+        return self._json_request('put', endpoint, json=threshold_data)

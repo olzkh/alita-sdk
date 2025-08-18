@@ -40,6 +40,16 @@ AVAILABLE TOOLS AND ACTIONS:
 - get_test_by_id: Get detailed test information by ID
 - create_backend_test: Create new JMeter/Gatling performance tests
 
+🎚️ BACKEND THRESHOLDS:
+- set_backend_thresholds: Show guidance to set backend thresholds (tests, environments, examples)
+- show_backend_tests_and_envs: List tests and their environments to guide thresholds
+- get_backend_requests: List available request names for a test/environment
+- create_backend_threshold: Create a threshold (test, environment, scope, target, aggregation, comparison, value)
+- list_backend_thresholds: List thresholds
+- get_backend_thresholds: List thresholds (alias)
+- update_backend_threshold: Update a threshold by id
+- delete_backend_threshold: Delete a threshold by id
+
 ▶️ BACKEND TEST EXECUTION:
 - run_test: Execute backend performance tests
 
@@ -114,6 +124,50 @@ Return a JSON object with this exact structure:
     "confidence_score": 0.95
 }}
 
+IMPORTANT TASK_TYPE MAPPING:
+- ALL backend thresholds operations (set_backend_thresholds, create_backend_threshold, list_backend_thresholds, update_backend_threshold, delete_backend_threshold) → use "test_management"
+- Backend tests management (get_backend_tests, create_backend_test, get_test_by_id) → use "test_management"  
+- UI tests management → use "ui_test_management"
+- Report analysis → use "backend_analysis" or "ui_analysis"
+- Test execution → use "test_execution" or "ui_test_execution"
+
+THRESHOLD PARAMETER EXTRACTION:
+For threshold creation, structure parameters as follows:
+- Extract test_name and environment as top-level parameters
+- Nest threshold details inside threshold_config object:
+  {{
+    "test_name": "extracted_test_name",
+    "environment": "extracted_environment", 
+    "threshold_config": {{
+      "test": "same_as_test_name",
+      "environment": "same_as_environment",
+      "scope": "all|every|specific_request_name",
+      "target": "response_time|throughput|error_rate", 
+      "aggregation": "max|min|avg|pct95|pct50",
+      "comparison": ">|>=|<|<=|==",
+      "value": numeric_value
+    }}
+  }}
+
+For threshold deletion/update operations:
+- Extract ID as "threshold_id" (not "id")
+- "delete threshold 927" → {{"threshold_id": "927"}}
+- For updates, nest changed fields inside "threshold_config" (NOTE: test name cannot be modified):
+  - "update threshold 123 value to 500" → {{"threshold_id": "123", "threshold_config": {{"value": 500}}}}
+  - "edit threshold 456 comparison to greater than" → {{"threshold_id": "456", "threshold_config": {{"comparison": ">"}}}}
+  - "change threshold 789 target to error_rate" → {{"threshold_id": "789", "threshold_config": {{"target": "error_rate"}}}}
+  - "update threshold 111 environment to prod" → {{"threshold_id": "111", "threshold_config": {{"environment": "prod"}}}}
+  - "edit threshold 222 scope to all" → {{"threshold_id": "222", "threshold_config": {{"scope": "all"}}}}
+  - "change threshold 333 aggregation to avg" → {{"threshold_id": "333", "threshold_config": {{"aggregation": "avg"}}}}
+
+Examples of threshold parameter extraction:
+- "error_rate threshold of 5%" → target: "error_rate", value: 5
+- "response time less than 3000ms" → target: "response_time", comparison: "<", value: 3000
+- "throughput greater than 100" → target: "throughput", comparison: ">", value: 100
+- "update to use 95th percentile" → aggregation: "pct95"
+- "change environment to production" → environment: "production"
+- "set scope to specific request name" → scope: "login_request"
+
 EXAMPLES:
 "create new test with the same params as UI_11 but name is Karen_UI_11" ->
 {{
@@ -166,11 +220,68 @@ EXAMPLES:
     "confidence_score": 0.9
 }}
 
+"create backend threshold for test DEMO_14_Aug in demo environment with response time less than 3000ms" →
+{{
+    "task_type": "test_management",
+    "action": "create_backend_threshold",
+    "tool_parameters": {{
+        "test_name": "DEMO_14_Aug",
+        "environment": "demo",
+        "threshold_config": {{
+            "test": "DEMO_14_Aug",
+            "environment": "demo", 
+            "scope": "all",
+            "target": "response_time",
+            "aggregation": "max",
+            "comparison": "<",
+            "value": 3000
+        }}
+    }},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+"delete threshold 927" →
+{{
+    "task_type": "test_management",
+    "action": "delete_backend_threshold",
+    "tool_parameters": {{"threshold_id": "927"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+"edit value for threshold 929 to 777" →
+{{
+    "task_type": "test_management",
+    "action": "update_backend_threshold",
+    "tool_parameters": {{"threshold_id": "929", "threshold_config": {{"value": 777}}}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+"update threshold 456 to use average aggregation and change value to 2000" →
+{{
+    "task_type": "test_management", 
+    "action": "update_backend_threshold",
+    "tool_parameters": {{"threshold_id": "456", "threshold_config": {{"aggregation": "avg", "value": 2000}}}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
 "generate a consolidated report in Excel format for the last 5 runs of jmeterDemo_Agent test" →
 {{
     "task_type": "backend_comparison",
     "action": "create_comparison_report",
     "tool_parameters": {{"test_name": "jmeterDemo_Agent", "run_count": "5", "output_format": "excel"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+"set a threshold for backend test" →
+{{
+    "task_type": "test_management",
+    "action": "set_backend_thresholds",
+    "tool_parameters": {{}},
     "is_ambiguous": false,
     "confidence_score": 0.95
 }}
@@ -223,7 +334,15 @@ VALID_ACTION_MAPPINGS = {
     'backend_analysis': ['get_reports', 'get_report_by_id', 'create_backend_excel_report'],
     'backend_comparison': ['jmeter_comparison_between_the_tests', 'gatling_comparison_between_the_tests',
                            'report_comparison_with_baseline', 'create_comparison_report'],
-    'test_management': ['get_backend_tests', 'get_test_by_id', 'create_backend_test'],
+    'test_management': [
+        'get_backend_tests', 'get_test_by_id', 'create_backend_test',
+        # Thresholds actions
+        'set_backend_thresholds', 'show_backend_tests_and_envs', 'get_backend_requests',
+        'create_backend_threshold', 'list_backend_thresholds', 'get_backend_thresholds',
+        'update_backend_threshold', 'delete_backend_threshold',
+        # Aliases
+        'delete_backend_thresholds', 'update_backend_thresholds'
+    ],
     'test_execution': ['run_test'],
     'ui_analysis': ['get_ui_reports', 'get_ui_report_by_id', 'create_ui_excel_report'],
     'ui_test_management': ['get_ui_tests', 'create_ui_test', 'update_ui_test_schedule', 'cancel_ui_test'],

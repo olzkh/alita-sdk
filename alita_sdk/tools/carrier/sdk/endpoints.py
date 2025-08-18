@@ -23,6 +23,11 @@ class _EndpointManager:
             'list_tests': f'api/v1/backend_performance/tests/{self._project_id}',
             'create_test': f'api/v1/backend_performance/tests/{self._project_id}',
             'run_test': f'api/v1/backend_performance/test/{self._project_id}/{{test_id}}',
+            # Backend metadata & thresholds
+            'list_backend_environments': f'api/v1/backend_performance/environments/{self._project_id}',
+            'list_backend_requests': f'api/v1/backend_performance/requests/{self._project_id}',
+            'backend_thresholds': f'api/v1/backend_performance/thresholds/{self._project_id}',
+            'backend_threshold_by_id': f'api/v1/backend_performance/thresholds/{self._project_id}/{{threshold_id}}',
 
             # === UI Performance ===
             'list_ui_tests': f'api/v1/ui_performance/tests/{self._project_id}',

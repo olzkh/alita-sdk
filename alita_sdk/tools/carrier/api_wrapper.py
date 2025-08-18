@@ -130,7 +130,9 @@ class CarrierAPIWrapper(BaseModel):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
     def get_locations(self) -> Dict[str, Any]:
-        return self._api_call('get_locations')
+        """Get list of available locations/cloud settings from the Carrier platform."""
+        # Delegate to the correct client method name on CarrierClient
+        return self._api_call('get_available_locations')
 
     def update_ui_test(self, test_id: str, json_body: dict) -> Dict[str, Any]:
         return self._api_call('update_ui_test', test_id, json_body)
@@ -202,3 +204,24 @@ class CarrierAPIWrapper(BaseModel):
     def _clean_html_name(file_name: str) -> str:
         match = re.match(r"(.+?\.html)", file_name)
         return match.group(1) if match else file_name
+
+    # =============================
+    # Backend metadata & thresholds
+    # =============================
+    def get_backend_environments(self, test_name: str) -> List[str]:
+        return self._api_call('get_backend_environments', test_name)
+
+    def get_backend_requests(self, test_name: str, environment: str) -> List[str]:
+        return self._api_call('get_backend_requests', test_name, environment)
+
+    def create_backend_threshold(self, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        return self._api_call('create_backend_threshold', threshold_data)
+
+    def get_backend_thresholds(self) -> Dict[str, Any]:
+        return self._api_call('get_backend_thresholds')
+
+    def delete_backend_threshold(self, threshold_id: str) -> Dict[str, Any]:
+        return self._api_call('delete_backend_threshold', threshold_id)
+
+    def update_backend_threshold(self, threshold_id: str, threshold_data: Dict[str, Any]) -> Dict[str, Any]:
+        return self._api_call('update_backend_threshold', threshold_id, threshold_data)
