@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from .api_wrapper import CarrierAPIWrapper
 from .backend_reports_tool import BaseCarrierTool
+from .backend_tests_tool import GetBackendTestsTool
 
 logger = logging.getLogger(__name__)
 
@@ -49,33 +50,11 @@ class ShowBackendTestsAndEnvsTool(BaseTool):
     args_schema: Type[BaseModel] = ShowTestsInput
 
     def _run(self) -> str:
+        """Use the extended GetBackendTestsTool to show tests with environments."""
         try:
-            tests = self.api_wrapper.get_tests_list()
-            if not tests:
-                return "❌ No backend tests found."
-
-            lines: List[str] = [
-                "🎯 Available backend tests and environments:",
-                ""
-            ]
-            for test in tests:
-                name = test.get("name")
-                if not name:
-                    continue
-                try:
-                    envs = self.api_wrapper.get_backend_environments(name)
-                    envs_str = ", ".join(envs) if envs else "No environments found"
-                except Exception as e:
-                    logger.warning(f"Failed to fetch envs for {name}: {e}")
-                    envs_str = "Failed to fetch"
-                lines.append(f"  • {name}: (envs: {envs_str})")
-
-            lines += [
-                "",
-                "Next: use get_backend_requests to list request names for a test/environment,",
-                "or use create_backend_threshold to create a threshold."
-            ]
-            return "\n".join(lines)
+            # Create GetBackendTestsTool instance and use its extended method
+            backend_tests_tool = GetBackendTestsTool(api_wrapper=self.api_wrapper)
+            return backend_tests_tool.get_tests_with_environments()
         except Exception as e:
             logger.exception("Failed to list tests and envs")
             raise ToolException(str(e))

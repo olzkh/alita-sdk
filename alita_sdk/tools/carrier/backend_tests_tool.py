@@ -86,6 +86,43 @@ class GetBackendTestsTool(BaseTool):
             logger.error(f"Error getting tests: {stacktrace}")
             raise ToolException(stacktrace)
 
+    @tool_logger  
+    def get_tests_with_environments(self) -> str:
+        """
+        Extended method to get backend tests with their environments for thresholds configuration.
+        This replaces the need for a separate ShowBackendTestsAndEnvsTool.
+        """
+        try:
+            tests = self.api_wrapper.get_tests_list()
+            if not tests:
+                return "❌ No backend tests found."
+
+            lines: List[str] = [
+                "🎯 Available backend tests and environments:",
+                ""
+            ]
+            for test in tests:
+                name = test.get("name")
+                if not name:
+                    continue
+                try:
+                    envs = self.api_wrapper.get_backend_environments(name)
+                    envs_str = ", ".join(envs) if envs else "No environments found"
+                except Exception as e:
+                    logger.warning(f"Failed to fetch envs for {name}: {e}")
+                    envs_str = "Failed to fetch"
+                lines.append(f"  • {name}: (envs: {envs_str})")
+
+            lines += [
+                "",
+                "Next: use get_backend_requests to list request names for a test/environment,",
+                "or use create_backend_threshold to create a threshold."
+            ]
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception("Failed to list tests and envs")
+            raise ToolException(str(e))
+
 
 # ====================================================================================
 # TOOL: GetTestByIDTool (No changes needed, but included for completeness)
