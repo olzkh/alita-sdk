@@ -147,13 +147,18 @@ class ListBackendThresholdsTool(BaseTool):
     def _run(self) -> str:
         try:
             data = self.api_wrapper.get_backend_thresholds()
-            if not data:
-                return "No backend thresholds found."
-            # Try rows formatting
             rows = data.get("rows") if isinstance(data, dict) else data
-            if isinstance(rows, list):
-                return json.dumps(rows, indent=2)
-            return json.dumps(data, indent=2)
+            if not rows:
+                return "No backend thresholds found."
+            
+            lines = [f"Found {len(rows)} threshold{'s' if len(rows) != 1 else ''}:", ""]
+            for t in rows:
+                cmp_disp = ThresholdsHelper.api_to_user_comparison(t.get("comparison"))
+                lines.append(
+                    f"ID: {t.get('id')} - Test: {t.get('test')} - Env: {t.get('environment')} - "
+                    f"Scope: {t.get('scope')} - Target: {t.get('target')} ({t.get('aggregation')}) {cmp_disp} {t.get('value')}"
+                )
+            return "\n".join(lines)
         except Exception as e:
             logger.exception("Failed to list backend thresholds")
             raise ToolException(str(e))
@@ -170,15 +175,17 @@ class DeleteBackendThresholdTool(BaseTool):
     def _run(self, threshold_id: Optional[str] = None) -> str:
         try:
             if not threshold_id:
+                # Reuse the same logic as ListBackendThresholdsTool
                 data = self.api_wrapper.get_backend_thresholds()
                 rows = data.get("rows") if isinstance(data, dict) else data
                 if not rows:
                     return "No backend thresholds found."
                 lines = [f"Found {len(rows)} thresholds. Provide threshold_id to delete:", ""]
                 for t in rows:
+                    cmp_disp = ThresholdsHelper.api_to_user_comparison(t.get("comparison"))
                     lines.append(
                         f"ID: {t.get('id')} - Test: {t.get('test')} - Env: {t.get('environment')} - "
-                        f"Target: {t.get('target')} {t.get('comparison')} {t.get('value')}"
+                        f"Scope: {t.get('scope')} - Target: {t.get('target')} ({t.get('aggregation')}) {cmp_disp} {t.get('value')}"
                     )
                 return "\n".join(lines)
 

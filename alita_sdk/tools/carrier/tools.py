@@ -311,7 +311,6 @@ ACTION_TOOL_MAP: Dict[str, Type[BaseTool]] = {
     "get_backend_requests": GetBackendRequestsTool,
     "create_backend_threshold": CreateBackendThresholdTool,
     "list_backend_thresholds": ListBackendThresholdsTool,
-    "get_backend_thresholds": ListBackendThresholdsTool,
     "delete_backend_threshold": DeleteBackendThresholdTool,
     "delete_backend_thresholds": DeleteBackendThresholdTool,
     "update_backend_threshold": UpdateBackendThresholdTool,

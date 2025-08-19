@@ -45,8 +45,7 @@ AVAILABLE TOOLS AND ACTIONS:
 - show_backend_tests_and_envs: List tests and their environments to guide thresholds
 - get_backend_requests: List available request names for a test/environment
 - create_backend_threshold: Create a threshold (test, environment, scope, target, aggregation, comparison, value)
-- list_backend_thresholds: List thresholds
-- get_backend_thresholds: List thresholds (alias)
+- list_backend_thresholds: List existing thresholds
 - update_backend_threshold: Update a threshold by id
 - delete_backend_threshold: Delete a threshold by id
 
@@ -338,7 +337,7 @@ VALID_ACTION_MAPPINGS = {
         'get_backend_tests', 'get_test_by_id', 'create_backend_test',
         # Thresholds actions
         'set_backend_thresholds', 'show_backend_tests_and_envs', 'get_backend_requests',
-        'create_backend_threshold', 'list_backend_thresholds', 'get_backend_thresholds',
+        'create_backend_threshold', 'list_backend_thresholds',
         'update_backend_threshold', 'delete_backend_threshold',
         # Aliases
         'delete_backend_thresholds', 'update_backend_thresholds'
