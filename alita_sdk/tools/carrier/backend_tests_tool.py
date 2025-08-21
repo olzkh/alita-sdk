@@ -4,7 +4,7 @@ from typing import Type, Optional, List, Dict, Union
 
 from datetime import datetime
 from langchain_core.tools import BaseTool, ToolException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from .api_wrapper import CarrierAPIWrapper
 from .backend_reports_tool import BaseCarrierTool
@@ -128,7 +128,16 @@ class GetBackendTestsTool(BaseTool):
 # TOOL: GetTestByIDTool (No changes needed, but included for completeness)
 # ====================================================================================
 class GetTestByIdInput(BaseModel):
-    test_id: str = Field(description="The ID of the test to retrieve.")
+    test_id: Optional[str] = Field(default=None, description="The ID of the test to retrieve.")
+    test_name: Optional[str] = Field(default=None, description="The name of the test to retrieve.")
+
+    @validator('test_id', pre=True, always=True)
+    def validate_test_identifier(cls, v, values):
+        """Ensure either test_id or test_name is provided."""
+        test_name = values.get('test_name')
+        if not v and not test_name:
+            raise ValueError("Either test_id or test_name must be provided")
+        return v
 
 
 class GetTestByIDTool(BaseTool):
@@ -139,16 +148,27 @@ class GetTestByIDTool(BaseTool):
     args_schema: Type[BaseModel] = GetTestByIdInput
 
     @tool_logger
-    def _run(self, test_id: str):
+    def _run(self, test_id: Optional[str] = None, test_name: Optional[str] = None):
         try:
             tests = self.api_wrapper.get_tests_list()
-            test_data = next((test for test in tests if str(test.get("id")) == test_id), None)
-            if not test_data:
-                raise ToolException(f"Test with ID {test_id} not found.")
+            
+            # Find test by ID or name
+            test_data = None
+            if test_id is not None:
+                test_data = next((test for test in tests if str(test.get("id")) == test_id), None)
+                if not test_data:
+                    raise ToolException(f"Test with ID {test_id} not found.")
+            elif test_name is not None:
+                test_data = next((test for test in tests if test.get("name") == test_name), None)
+                if not test_data:
+                    raise ToolException(f"Test with name '{test_name}' not found.")
+            else:
+                raise ToolException("Either test_id or test_name must be provided.")
+            
             return json.dumps(test_data, indent=2)
         except Exception as e:
-            logger.error(f"Error finding test {test_id}: {e}")
-            raise ToolException(f"Could not retrieve test {test_id}.")
+            logger.error(f"Error finding test: {e}")
+            raise ToolException(f"Could not retrieve test.")
 
 
 # ====================================================================================
@@ -156,10 +176,19 @@ class GetTestByIDTool(BaseTool):
 # ====================================================================================
 class RunTestInput(BaseModel):
     """Defines the complete set of arguments for running a test."""
-    test_id: int = Field(description="The numeric ID of the test to run.")
+    test_id: Optional[int] = Field(default=None, description="The numeric ID of the test to run.")
+    test_name: Optional[str] = Field(default=None, description="The name of the test to run.")
     duration: Optional[int] = Field(default=None, description="Optional. Test duration in seconds.")
     users: Optional[int] = Field(default=None, description="Optional. Number of virtual users.")
     location: Optional[str] = Field(default=None, description="Optional. Location to run the test.")
+
+    @validator('test_id', pre=True, always=True)
+    def validate_test_identifier(cls, v, values):
+        """Ensure either test_id or test_name is provided."""
+        test_name = values.get('test_name')
+        if not v and not test_name:
+            raise ValueError("Either test_id or test_name must be provided")
+        return v
 
 
 class RunTestByIDTool(BaseTool):
@@ -173,21 +202,36 @@ class RunTestByIDTool(BaseTool):
     args_schema: Type[BaseModel] = RunTestInput
 
     @tool_logger
-    def _run(self, test_id: int, **kwargs):
+    def _run(self, test_id: Optional[int] = None, test_name: Optional[str] = None, **kwargs):
         """
         This method now correctly receives all resolved parameters (including overrides)
-        and applies them before executing the test.
+        and applies them before executing the test. Supports both test_id and test_name.
         """
         try:
-            logger.info(f"Attempting to run test {test_id} with provided overrides: {kwargs}")
-
             # 1. Fetch the complete test data from the API
             tests = self.api_wrapper.get_tests_list()
-            test_data = next((t for t in tests if str(t.get("id")) == str(test_id)), None)
-            if not test_data:
-                raise ToolException(f"Test with id {test_id} not found.")
+            
+            # 2. Find test by ID or name
+            test_data = None
+            if test_id is not None:
+                logger.info(f"Attempting to run test by ID: {test_id}")
+                test_data = next((t for t in tests if str(t.get("id")) == str(test_id)), None)
+                if not test_data:
+                    raise ToolException(f"Test with ID {test_id} not found.")
+            elif test_name is not None:
+                logger.info(f"Attempting to run test by name: {test_name}")
+                test_data = next((t for t in tests if t.get("name") == test_name), None)
+                if not test_data:
+                    raise ToolException(f"Test with name '{test_name}' not found.")
+            else:
+                raise ToolException("Either test_id or test_name must be provided.")
+            
+            # Log the test being executed
+            actual_test_id = test_data.get('id')
+            logger.info(f"Found test: ID={actual_test_id}, Name='{test_data.get('name')}'")
+            logger.info(f"Provided overrides: {kwargs}")
 
-            # 2. Create a dictionary of the test's default parameters
+            # 3. Create a dictionary of the test's default parameters
             default_params_list = test_data.get("test_parameters", [])
             final_params = {p['name']: p['default'] for p in default_params_list}
             logger.debug(f"Default parameters loaded: {final_params}")
@@ -225,8 +269,8 @@ class RunTestByIDTool(BaseTool):
                 "integrations": test_data.get("integrations", {})
             }
 
-            # 7. Execute the test via the API wrapper
-            report_id = self.api_wrapper.run_test(str(test_id), json_body)
+            # 7. Execute the test via the API wrapper - use the actual test ID from test_data
+            report_id = self.api_wrapper.run_test(str(actual_test_id), json_body)
             # Build the correct report URL
             base_url = self.api_wrapper.url.rstrip('/')
             report_url = f"{base_url}/-/performance/backend/results?result_id={report_id}"
@@ -243,8 +287,8 @@ class RunTestByIDTool(BaseTool):
             }, indent=2)
 
         except Exception as e:
-            logger.exception(f"Critical failure in RunTestByIDTool for test {test_id}")
-            raise ToolException(f"Failed to run test {test_id}. Error: {e}")
+            logger.exception(f"Critical failure in RunTestByIDTool for test {test_id or test_name}")
+            raise ToolException(f"Failed to run test {test_id or test_name}. Error: {e}")
 
 
 # ====================================================================================
