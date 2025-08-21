@@ -80,6 +80,10 @@ class CarrierAPIWrapper(BaseModel):
     def run_ui_test(self, test_id: str, json_body: dict) -> Dict[str, Any]:
         return self._api_call('run_ui_test', test_id, json_body)
 
+    def add_tag_to_report(self, report_id: str, tag_name: str) -> Dict[str, Any]:
+        """Add a tag to a backend performance report."""
+        return self._api_call('add_tag_to_report', report_id, tag_name)
+
     def get_engagements_list(self) -> List[Dict[str, Any]]:
         return self._api_call('get_engagements_list')
 

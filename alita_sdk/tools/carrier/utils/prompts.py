@@ -34,6 +34,7 @@ AVAILABLE TOOLS AND ACTIONS:
 - get_reports: List backend performance reports (JMeter, Gatling results)
 - get_report_by_id: Get detailed report information by ID (includes direct link to view report)
 - create_backend_excel_report: Generate Excel reports from test data
+- add_tag_to_report: Add tags to backend reports for categorization and filtering
 
 🧪 BACKEND TEST MANAGEMENT:
 - get_backend_tests: List all backend performance tests
@@ -276,6 +277,24 @@ EXAMPLES:
     "confidence_score": 0.95
 }}
 
+"add tag Critical to report 5353" →
+{{
+    "task_type": "backend_analysis",
+    "action": "add_tag_to_report",
+    "tool_parameters": {{"report_id": "5353", "tag_name": "Critical"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+"tag report ID 456 as Performance" →
+{{
+    "task_type": "backend_analysis", 
+    "action": "add_tag_to_report",
+    "tool_parameters": {{"report_id": "456", "tag_name": "Performance"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
 "set a threshold for backend test" →
 {{
     "task_type": "test_management",
@@ -330,7 +349,7 @@ def _get_tool_parameter_guidance_from_schema(tool_schema: Any) -> str:
 
 
 VALID_ACTION_MAPPINGS = {
-    'backend_analysis': ['get_reports', 'get_report_by_id', 'create_backend_excel_report'],
+    'backend_analysis': ['get_reports', 'get_report_by_id', 'create_backend_excel_report', 'add_tag_to_report'],
     'backend_comparison': ['jmeter_comparison_between_the_tests', 'gatling_comparison_between_the_tests',
                            'report_comparison_with_baseline', 'create_comparison_report'],
     'test_management': [

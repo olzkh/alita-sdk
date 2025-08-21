@@ -799,3 +799,45 @@ class CreateBackendExcelReportTool(BaseCarrierTool):
     def _error_response(self, message: str) -> str:
         """Formats a standard error JSON response."""
         return json.dumps({"status": "error", "message": f"❌ {message}"}, indent=2)
+
+
+# ====================================================================================
+# TOOL: AddTagToReportTool
+# ====================================================================================
+class AddTagInput(BaseModel):
+    """Input schema for adding tags to reports."""
+    report_id: str = Field(..., description="The ID of the report to tag")
+    tag_name: str = Field(..., description="The name of the tag to add")
+
+
+class AddTagToReportTool(BaseTool):
+    """Tool to add tags to backend performance reports."""
+    api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
+    name: str = "add_tag_to_report"
+    description: str = "Add a tag to a backend performance report for categorization and filtering."
+    args_schema: Type[BaseModel] = AddTagInput
+
+    def _run(self, report_id: str, tag_name: str) -> str:
+        """Add a tag to the specified report."""
+        try:
+            logger.info(f"🏷️ Adding tag '{tag_name}' to report {report_id}")
+            
+            # Add the tag using the API wrapper
+            response = self.api_wrapper.add_tag_to_report(report_id, tag_name)
+            
+            # Build success response
+            return json.dumps({
+                "message": f"✅ Successfully added tag '{tag_name}' to report {report_id}",
+                "report_id": report_id,
+                "tag_name": tag_name,
+                "status": "success"
+            }, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Failed to add tag '{tag_name}' to report {report_id}: {e}")
+            return json.dumps({
+                "message": f"❌ Failed to add tag '{tag_name}' to report {report_id}. Error: {str(e)}",
+                "report_id": report_id,
+                "tag_name": tag_name,
+                "status": "error"
+            }, indent=2)
