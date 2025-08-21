@@ -295,16 +295,31 @@ class RunTestByIDTool(BaseTool):
 # TOOL: CreateBackendTestTool (Included for completeness)
 # ====================================================================================
 class CreateBackendTestInput(BaseModel):
-    test_name: str = Field(..., description="Test name")
-    test_type: str = Field(..., description="Test type")
-    env_type: str = Field(..., description="Env type")
-    entrypoint: str = Field(..., description="Entrypoint for the test (JMeter script path or Gatling simulation path)")
-    custom_cmd: str = Field(..., description="Custom command line to execute the test")
-    runner: str = Field(..., description="Test runner (Gatling or JMeter)")
-    source: Optional[Dict[str, Optional[str]]] = Field(None, description="Test source configuration (Git repo)")
-    test_parameters: Optional[List[Dict[str, str]]] = Field(None, description="Test parameters")
-    email_integration: Optional[Dict[str, Optional[Union[int, List[str]]]]] = Field(None,
-                                                                                    description="Email integration configuration")
+    """Flexible input schema that can handle both individual parameters and full JSON configurations."""
+    
+    # Core parameters for simple usage
+    test_name: Optional[str] = Field(None, description="Test name")
+    name: Optional[str] = Field(None, description="Test name (alternative field)")
+    entrypoint: Optional[str] = Field(None, description="Entrypoint for the test")
+    runner: Optional[str] = Field(None, description="Test runner (Gatling or JMeter)")
+    source: Optional[Dict] = Field(None, description="Test source configuration")
+    test_parameters: Optional[List[Dict]] = Field(None, description="Test parameters")
+    
+    # Full configuration structure - allows passing complete JSON
+    common_params: Optional[Dict] = Field(None, description="Full common_params structure")
+    integrations: Optional[Dict] = Field(None, description="Integration settings")
+    scheduling: Optional[List] = Field(None, description="Scheduling configuration")
+    run_test: Optional[bool] = Field(None, description="Whether to run test immediately")
+    
+    # Additional individual parameters
+    test_type: Optional[str] = Field(None, description="Test type")
+    env_type: Optional[str] = Field(None, description="Environment type")
+    env_vars: Optional[Dict] = Field(None, description="Environment variables")
+    parallel_runners: Optional[int] = Field(None, description="Number of parallel runners")
+    location: Optional[str] = Field(None, description="Test location")
+    
+    class Config:
+        extra = "allow"  # Allow additional fields for maximum flexibility
 
 class CreateBackendTestTool(BaseCarrierTool):
     """⚗️ Creates new performance tests with comprehensive validation."""
@@ -313,60 +328,151 @@ class CreateBackendTestTool(BaseCarrierTool):
     description: str = "⚗️ Create a new performance test configuration"
     args_schema: Type[BaseModel] = CreateBackendTestInput
 
-    def _run(self, test_name: str, entrypoint: str, runner: str,
-             source: Dict, test_parameters: List[Dict] = None) -> str:
-        operation = f"creating test {test_name}"
-        start_time = datetime.now()
-
-        self.log_operation_start(
-            operation,
-            test_name=test_name,
-            runner=runner,
-            entrypoint=entrypoint,
-            param_count=len(test_parameters or [])
-        )
-
+    def _run(self, **kwargs) -> str:
+        """
+        Create a backend test with flexible input handling.
+        Can process both individual parameters and full JSON configurations.
+        """
         try:
-            # Validate runner format
-            available_runners = {
-                "JMeter_v5.6.3": "v5.6.3",
-                "JMeter_v5.5": "v5.5",
-                "Gatling_v3.7": "v3.7",
-                "Gatling_maven": "maven",
-            }
-
-            # Normalize runner
-            runner_value = available_runners.get(runner, runner)
-            if runner_value not in available_runners.values():
-                raise ToolException(f"🔧 Invalid runner '{runner}'. Available: {list(available_runners.keys())}")
-
-            # Build test configuration
-            test_config = {
-                "common_params": {
-                    "name": test_name,
-                    "test_type": "default",
-                    "env_type": "default",
-                    "entrypoint": entrypoint,
-                    "runner": runner_value,
-                    "source": source,
-                    "env_vars": {
-                        "cpu_quota": 1,
-                        "memory_quota": 4,
+            # Check if this is a full JSON configuration (has common_params)
+            if 'common_params' in kwargs and kwargs['common_params']:
+                # Use the provided configuration directly
+                test_config = {
+                    "common_params": kwargs['common_params'],
+                    "test_parameters": kwargs.get('test_parameters', []),
+                    "integrations": kwargs.get('integrations', {}),
+                    "scheduling": kwargs.get('scheduling', []),
+                    "run_test": kwargs.get('run_test', False)
+                }
+                test_name = kwargs['common_params'].get('name', 'Unknown')
+            else:
+                # Extract individual parameters (handle both 'name' and 'test_name')
+                test_name = kwargs.get('test_name') or kwargs.get('name')
+                if not test_name:
+                    raise ToolException("test_name (or name) is required")
+                    
+                entrypoint = kwargs.get('entrypoint')
+                if not entrypoint:
+                    raise ToolException("entrypoint is required")
+                    
+                runner = kwargs.get('runner') or kwargs.get('test_runner')
+                if not runner:
+                    raise ToolException("runner is required")
+                
+                # Handle source parameter mapping (multiple possible names)
+                source = kwargs.get('source') or kwargs.get('source_repo_info') or kwargs.get('source_repo') or {}
+                
+                # Transform source if it has different field names
+                if source:
+                    if 'repository' in source:
+                        # Convert from intent extraction format to API format
+                        source = {
+                            "name": source.get('type', 'git_https'),
+                            "repo": source.get('repository'),
+                            "branch": source.get('branch', 'main'),
+                            "username": source.get('username', ''),
+                            "password": source.get('password', '')
+                        }
+                    elif 'url' in source:
+                        # Convert from alternate intent format to API format
+                        source = {
+                            "name": "git_https",
+                            "repo": source.get('url'),
+                            "branch": source.get('branch', 'main'),
+                            "username": source.get('username', ''),
+                            "password": source.get('password', '')
+                        }
+                
+                # Validate and normalize runner
+                available_runners = {
+                    "JMeter_v5.6.3": "v5.6.3",
+                    "JMeter_v5.5": "v5.5", 
+                    "Gatling_v3.7": "v3.7",
+                    "Gatling_maven": "maven",
+                }
+                runner_value = available_runners.get(runner, runner)
+                if runner_value not in available_runners.values():
+                    raise ToolException(f"🔧 Invalid runner '{runner}'. Available: {list(available_runners.keys())}")
+                
+                # Handle test_parameters format conversion
+                test_parameters = kwargs.get('test_parameters', [])
+                
+                # Convert different formats to API format
+                if isinstance(test_parameters, dict):
+                    # Convert from dict format: {'vUsers': 1, 'rampUp': 1} 
+                    # to list format: [{'name': 'vUsers', 'default': '1'}, ...]
+                    test_parameters = [
+                        {
+                            'name': key,
+                            'default': str(value),
+                            'type': 'string',
+                            'description': '',
+                            'action': ''
+                        }
+                        for key, value in test_parameters.items()
+                    ]
+                elif isinstance(test_parameters, list) and test_parameters:
+                    # Handle list format - convert 'value' to 'default' if needed
+                    for param in test_parameters:
+                        if isinstance(param, dict):
+                            if 'value' in param and 'default' not in param:
+                                param['default'] = str(param.pop('value'))
+                            # Ensure required fields exist
+                            param.setdefault('type', 'string')
+                            param.setdefault('description', '')
+                            param.setdefault('action', '')
+                
+                # Handle environment variables and custom command
+                env_vars = kwargs.get('env_vars', {})
+                custom_cmd = kwargs.get('custom_cmd', '')
+                
+                # Extract resource allocation if provided
+                resource_allocation = kwargs.get('resource_allocation', {})
+                
+                # Build env_vars structure
+                if not env_vars:
+                    env_vars = {
+                        "cpu_quota": kwargs.get('cpu_quota') or resource_allocation.get('cpu_quota', 1),
+                        "memory_quota": kwargs.get('memory_quota') or resource_allocation.get('memory_quota', 4),
                         "cloud_settings": {},
-                        "custom_cmd": ""
+                        "custom_cmd": custom_cmd
+                    }
+                elif custom_cmd and 'custom_cmd' not in env_vars:
+                    env_vars['custom_cmd'] = custom_cmd
+                
+                # Build configuration from individual parameters
+                test_config = {
+                    "common_params": {
+                        "name": test_name,
+                        "test_type": kwargs.get('test_type', 'default'),
+                        "env_type": kwargs.get('env_type', kwargs.get('environment', 'default')),
+                        "entrypoint": entrypoint,
+                        "runner": runner_value,
+                        "source": source,
+                        "env_vars": env_vars,
+                        "parallel_runners": kwargs.get('parallel_runners') or kwargs.get('number_of_parallel_runners') or resource_allocation.get('parallel_runners', 1),
+                        "cc_env_vars": {},
+                        "customization": {},
+                        "location": kwargs.get('location', 'default')
                     },
-                    "parallel_runners": 1,
-                    "cc_env_vars": {},
-                    "customization": {},
-                    "location": "default"
-                },
-                "test_parameters": test_parameters or [],
-                "integrations": {},
-                "scheduling": [],
-                "run_test": False
-            }
+                    "test_parameters": test_parameters,
+                    "integrations": kwargs.get('integrations', kwargs.get('email_integration', {})),
+                    "scheduling": kwargs.get('scheduling', []),
+                    "run_test": kwargs.get('run_test', False)
+                }
 
-            # Create test
+            operation = f"creating test {test_name}"
+            start_time = datetime.now()
+
+            self.log_operation_start(
+                operation,
+                test_name=test_name,
+                runner=test_config['common_params'].get('runner', 'unknown'),
+                entrypoint=test_config['common_params'].get('entrypoint', 'unknown'),
+                param_count=len(test_config.get('test_parameters', []))
+            )
+
+            # Create test using the API wrapper
             response = self.api_wrapper.create_test(test_config)
             test_info = response.json() if hasattr(response, 'json') else {"id": "created"}
 
@@ -377,10 +483,11 @@ class CreateBackendTestTool(BaseCarrierTool):
                 "message": f"✅ Test '{test_name}' created successfully",
                 "test_id": test_info.get('id'),
                 "test_name": test_info.get('name', test_name),
-                "runner": runner_value,
+                "runner": test_config['common_params'].get('runner'),
                 "creation_timestamp": datetime.now().isoformat()
             }, indent=2)
 
         except Exception as e:
+            operation = f"creating test"
             self.handle_api_error(operation, e)
 
