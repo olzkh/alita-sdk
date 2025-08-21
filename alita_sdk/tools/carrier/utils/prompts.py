@@ -111,6 +111,13 @@ RAMP UP CONVERSION (convert to seconds):
 STRING PARAMETERS:
 - Test names, descriptions, URLs, environments as strings
 
+TEST NAME FILTERING FOR REPORTS:
+When users request reports for specific tests, extract test names and use them as filters:
+- "get reports for JMETER_DEMO" → test_name: "JMETER_DEMO"
+- "show me reports from Load_Test_v2" → test_name: "Load_Test_v2"
+- "backend reports for API_Performance" → test_name: "API_Performance"
+- "Get only backend reports JMETER_DEMO" → test_name: "JMETER_DEMO"
+
 RESPONSE FORMAT:
 Return a JSON object with this exact structure:
 
@@ -195,6 +202,24 @@ EXAMPLES:
     "tool_parameters": {{}},
     "is_ambiguous": false,
     "confidence_score": 0.9
+}}
+
+"get reports for JMETER_DEMO" →
+{{
+    "task_type": "backend_analysis",
+    "action": "get_reports",
+    "tool_parameters": {{"test_name": "JMETER_DEMO"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
+}}
+
+"Get only backend reports JMETER_DEMO" →
+{{
+    "task_type": "backend_analysis",
+    "action": "get_reports",
+    "tool_parameters": {{"test_name": "JMETER_DEMO"}},
+    "is_ambiguous": false,
+    "confidence_score": 0.95
 }}
 
 "get tests" (truly ambiguous) →
