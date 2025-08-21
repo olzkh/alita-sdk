@@ -202,9 +202,11 @@ class GatlingReportParser(BaseReportParser):
         """Assembles the final, validated ReportSummary object."""
         total_metrics = metrics.get("Total")
         if not total_metrics:
-            return ReportSummary()
+            self.logger.error("Failed to extract any transaction metrics from Gatling log - no 'Total' metrics found")
+            raise ValueError("Unable to parse Gatling log file: No transaction data was found. "
+                           "The log file may be empty, corrupted, or in an unsupported format.")
 
-        throughput = self._safe_divide(total_metrics.OK, duration.total_seconds())
+        throughput = self._safe_divide(total_metrics.samples - total_metrics.ko, duration.total_seconds())
 
         return ReportSummary(
             max_user_count=users,
@@ -367,7 +369,6 @@ class JMeterReportParser(BaseReportParser):
 
         try:
             summary = ReportSummary(
-                simulation_name="karen",
                 max_user_count=max_user_count,
                 ramp_up_period=0,
                 error_rate=error_rate,

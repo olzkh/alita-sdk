@@ -172,7 +172,6 @@ class ReportSummary:
     Immutable summary metrics for the entire performance test.
     Maintains legacy field structure for Excel compatibility.
     """
-    simulation_name: str
     max_user_count: int
     ramp_up_period: float
     error_rate: float
