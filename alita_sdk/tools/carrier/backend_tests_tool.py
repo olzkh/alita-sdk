@@ -201,6 +201,40 @@ class RunTestByIDTool(BaseTool):
     description: str = "Execute a backend performance test plan from the Carrier platform."
     args_schema: Type[BaseModel] = RunTestInput
 
+    def _get_available_locations(self) -> List[str]:
+        """Get list of available locations from the Carrier platform."""
+        try:
+            locations_response = self.api_wrapper.get_available_locations()
+            logger.debug(f"Available locations response: {locations_response}")
+            
+            # Extract actual location names from the nested response structure
+            # Response format: {"public_regions": ["default", "dial"], "project_regions": [], "cloud_regions": []}
+            location_names = []
+            
+            if isinstance(locations_response, dict):
+                # Iterate through all region types (public_regions, project_regions, cloud_regions)
+                for region_type, regions in locations_response.items():
+                    if isinstance(regions, list):
+                        location_names.extend([str(location) for location in regions if location])
+                    elif isinstance(regions, str):
+                        location_names.append(str(regions))
+            elif isinstance(locations_response, list):
+                # Fallback: if response is a direct list
+                location_names = [str(location) for location in locations_response if location]
+            
+            # Remove duplicates while preserving order
+            unique_locations = []
+            for loc in location_names:
+                if loc not in unique_locations:
+                    unique_locations.append(loc)
+            
+            logger.debug(f"Extracted location names: {unique_locations}")
+            return unique_locations
+                
+        except Exception as e:
+            logger.error(f"Failed to fetch available locations: {e}")
+            return []
+
     @tool_logger
     def _run(self, test_id: Optional[int] = None, test_name: Optional[str] = None, **kwargs):
         """
@@ -231,7 +265,31 @@ class RunTestByIDTool(BaseTool):
             logger.info(f"Found test: ID={actual_test_id}, Name='{test_data.get('name')}'")
             logger.info(f"Provided overrides: {kwargs}")
 
-            # 3. Create a dictionary of the test's default parameters
+            # 3. Validate location if provided
+            if 'location' in kwargs and kwargs['location'] is not None:
+                requested_location = kwargs['location']
+                available_locations = self._get_available_locations()
+                if available_locations and requested_location not in available_locations:
+                    if not available_locations:
+                        raise ToolException(
+                            f"❌ Location '{requested_location}' is not available. "
+                            f"No locations are currently available on the platform."
+                        )
+                    else:
+                        available_locations_str = "', '".join(available_locations)
+                        example_location = available_locations[0]  # Use first available location for example
+                        raise ToolException(
+                            f"❌ Location '{requested_location}' is not available.\n\n"
+                            f"📍 **Available locations:** '{available_locations_str}'\n\n"
+                            f"💡 **Try again with:** 'Run backend test 246 from location {example_location}'"
+                        )
+                elif not available_locations:
+                    # If no locations available but none was specified, just log a warning
+                    logger.warning("No locations available from the platform, proceeding with default location")
+                else:
+                    logger.info(f"✅ Location '{requested_location}' validated successfully")
+
+            # 4. Create a dictionary of the test's default parameters
             default_params_list = test_data.get("test_parameters", [])
             final_params = {p['name']: p['default'] for p in default_params_list}
             logger.debug(f"Default parameters loaded: {final_params}")
@@ -243,10 +301,10 @@ class RunTestByIDTool(BaseTool):
 
             logger.info(f"Final parameters after override: {final_params}")
 
-            # 4. Convert the final parameters back to the list-of-dicts format the API expects
+            # 5. Convert the final parameters back to the list-of-dicts format the API expects
             api_test_parameters = [{"name": k, "default": str(v)} for k, v in final_params.items()]
 
-            # 5. Build the 'common_params' dictionary for the API request body
+            # 6. Build the 'common_params' dictionary for the API request body
             loc_ = kwargs.get("location", test_data.get("location", "default"))
             common_params = {
                 "name": test_data.get("name"),
@@ -262,14 +320,14 @@ class RunTestByIDTool(BaseTool):
             if "cloud_settings" in kwargs and kwargs["cloud_settings"] is not None:
                 common_params["env_vars"]["cloud_settings"] = kwargs["cloud_settings"]
 
-            # 6. Construct the final JSON body for the API call
+            # 7. Construct the final JSON body for the API call
             json_body = {
                 "common_params": common_params,
                 "test_parameters": api_test_parameters,
                 "integrations": test_data.get("integrations", {})
             }
 
-            # 7. Execute the test via the API wrapper - use the actual test ID from test_data
+            # 8. Execute the test via the API wrapper - use the actual test ID from test_data
             report_id = self.api_wrapper.run_test(str(actual_test_id), json_body)
             # Build the correct report URL
             base_url = self.api_wrapper.url.rstrip('/')
