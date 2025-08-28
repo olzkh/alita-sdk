@@ -577,9 +577,9 @@ class CarrierClient(BaseModel):
         response = self._json_request('post', endpoint, json=json_body)
         return response.get("result_id", "")
 
-    def cancel_ui_test(self, test_id: str) -> Dict[str, Any]:
+    def cancel_ui_test(self, report_id: str) -> Dict[str, Any]:
         """Cancels a UI test by setting its status to Canceled."""
-        endpoint = self.endpoints.build_endpoint('cancel_ui_test', test_id=test_id)
+        endpoint = self.endpoints.build_endpoint('cancel_ui_test', report_id=report_id)
 
         cancel_body = {
             "test_status": {

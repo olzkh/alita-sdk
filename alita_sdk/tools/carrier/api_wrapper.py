@@ -147,8 +147,8 @@ class CarrierAPIWrapper(BaseModel):
     def create_ui_test(self, json_body: Dict[str, Any]) -> Dict[str, Any]:
         return self._api_call('create_ui_test', json_body)
 
-    def cancel_ui_test(self, test_id: str) -> Dict[str, Any]:
-        return self._api_call('cancel_ui_test', test_id)
+    def cancel_ui_test(self, report_id: str) -> Dict[str, Any]:
+        return self._api_call('cancel_ui_test', report_id)
 
     def validate_report_request(self, request: ReportRequest) -> str:
         reports = (self.get_reports_list() if request.report_type == ReportType.backend else self.get_ui_reports_list())
