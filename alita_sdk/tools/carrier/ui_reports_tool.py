@@ -25,6 +25,9 @@ class GetUIReportsTool(BaseTool):
             "name": (
                 str,
                 Field(default=None, description="Optional. Filter reports by name (case-insensitive, partial match)")),
+            "test_name": (
+                str,
+                Field(default=None, description="Optional. Alternative parameter for 'name'")),
             "start_time": (
                 str,
                 Field(default=None, description="Start date/time for filtering reports (YYYY-MM-DD or ISO format)")),
@@ -33,13 +36,16 @@ class GetUIReportsTool(BaseTool):
         }
     )
 
-    def _run(self, name=None, start_time=None, end_time=None, **kwargs):
+    def _run(self, name=None, start_time=None, end_time=None, test_name=None, **kwargs):
+        # Parameter normalization
+        actual_name = name or test_name
+
         # Only prompt if all parameters are missing
-        if not (name or start_time or end_time):
+        if not (actual_name or start_time or end_time):
             return self._missing_input_response()
         # If only name is provided, use the dedicated search_by_name method
-        if name and not (start_time or end_time):
-            return self.search_by_name(name)
+        if actual_name and not (start_time or end_time):
+            return self.search_by_name(actual_name)
         try:
             reports = self.api_wrapper.get_ui_reports_list()
             base_fields = {
@@ -51,7 +57,7 @@ class GetUIReportsTool(BaseTool):
             trimmed_reports = []
             for report in reports:
                 # Filter by name if provided (with date filters)
-                if name and name.lower() not in report.get("name", "").lower():
+                if actual_name and actual_name.lower() not in report.get("name", "").lower():
                     continue
                 # Filter by start_time if any time filter is provided
                 report_start = report.get("start_time")
