@@ -12,19 +12,24 @@ logger = logging.getLogger(__name__)
 class CancelUITestInput(BaseModel):
     """Input model for CancelUITestTool."""
     report_id: Optional[str] = Field(default=None, description="The report ID of the UI test to cancel")
+    test_id: Optional[str] = Field(default=None, description="Alternative parameter name for report ID (used by orchestration engine)")
+    result_id: Optional[str] = Field(default=None, description="Alternative parameter name for report ID (used by orchestration engine)")
 
 
 class CancelUITestTool(BaseTool):
     api_wrapper: CarrierAPIWrapper = Field(..., description="Carrier API Wrapper instance")
     name: str = "cancel_ui_test"
-    description: str = "Cancel a UI test or show available tests to cancel in the Carrier platform."
+    description: str = "Cancel a UI test by report ID, test ID, or result ID, or show available tests to cancel in the Carrier platform."
     args_schema: Type[BaseModel] = CancelUITestInput
 
-    def _run(self, report_id: Optional[str] = None):
+    def _run(self, report_id: Optional[str] = None, test_id: Optional[str] = None, result_id: Optional[str] = None):
         try:
-            if report_id:
+            # Parameter normalization - handle different parameter names from orchestration engine
+            actual_report_id = report_id or test_id or result_id
+            
+            if actual_report_id:
                 # User provided a specific report ID to cancel
-                return self._cancel_specific_test(report_id)
+                return self._cancel_specific_test(actual_report_id)
             else:
                 # User didn't provide ID, show available tests to cancel
                 return self._show_cancelable_tests()
@@ -66,7 +71,7 @@ class CancelUITestTool(BaseTool):
 All UI tests are already in final states (Canceled, Finished, or Failed).
 
 ## 🔍 To cancel a specific test:
-Use the command: `Cancel UI test <report_id>`
+Use the command: `Cancel UI test <report_id>` or `Cancel UI test <test_id>`
 
 Example: `Cancel UI test 12345`"""
             
@@ -89,7 +94,7 @@ The following tests are currently running and can be canceled:
             
             response += """
 ## 🚫 To cancel a specific test:
-Use the command: `Cancel UI test <report_id>`
+Use the command: `Cancel UI test <report_id>` or `Cancel UI test <test_id>`
 
 Example: `Cancel UI test 12345`"""
             
